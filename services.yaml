@@ -150,6 +150,10 @@ services:
     build: true
     manifest: true
 
+  - name: remote-warehouse
+    build: true
+    manifest: true
+
   - name: shipping
     build: false
     manifest: true

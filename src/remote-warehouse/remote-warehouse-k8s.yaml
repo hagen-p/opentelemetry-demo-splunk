@@ -1,0 +1,72 @@
+# Kubernetes manifest for remote-warehouse
+# Python-based Kafka consumer that creates spans in existing traces
+# Contains 1 resource(s)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: remote-warehouse
+  labels:
+    opentelemetry.io/name: remote-warehouse
+    app.kubernetes.io/component: remote-warehouse
+    app.kubernetes.io/name: remote-warehouse
+    app.kubernetes.io/version: 2.1.3
+    app.kubernetes.io/part-of: opentelemetry-demo
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      opentelemetry.io/name: remote-warehouse
+  template:
+    metadata:
+      labels:
+        opentelemetry.io/name: remote-warehouse
+        app.kubernetes.io/component: remote-warehouse
+        app.kubernetes.io/name: remote-warehouse
+    spec:
+      serviceAccountName: opentelemetry-demo
+      containers:
+      - name: remote-warehouse
+        image: ghcr.io/splunk/opentelemetry-demo/otel-remote-warehouse:1.0.0
+        imagePullPolicy: Always
+        env:
+        - name: OTEL_SERVICE_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.labels['app.kubernetes.io/component']
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: OTEL_COLLECTOR_NAME
+          value: $(NODE_IP)
+        - name: OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
+          value: cumulative
+        - name: KAFKA_ADDR
+          value: kafka:9092
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://$(OTEL_COLLECTOR_NAME):4318
+        - name: SERVICE_NAMESPACE
+          value: opentelemetry-demo
+        - name: SERVICE_VERSION
+          value: '2.1.3'
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: service.name=$(OTEL_SERVICE_NAME),service.namespace=opentelemetry-demo,service.version=2.1.3,service.kafka=consumer
+        - name: OTEL_PYTHON_LOG_CORRELATION
+          value: 'true'
+        - name: OTEL_PYTHON_LOG_LEVEL
+          value: info
+        resources:
+          limits:
+            memory: 200Mi
+        volumeMounts: null
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - until nc -z -v -w30 kafka 9092; do echo waiting for kafka; sleep 2; done;
+        image: busybox:latest
+        name: wait-for-kafka
+      volumes: null
