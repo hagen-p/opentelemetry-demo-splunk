@@ -26,9 +26,12 @@ def update_manifest_image(service, registry, image_name, version):
     # New image reference
     new_image = f"{registry}/{image_name}:{version}"
 
-    # Pattern to match image lines (handles various registry formats)
-    # Matches: image: ghcr.io/*/anything:any-tag
-    pattern = r'(\s+image:\s+)ghcr\.io/[^\s]+:\S+'
+    # Pattern to match ONLY this specific image (by image name, regardless of registry/tag)
+    # This ensures we only update the image being built, not other images like init containers
+    # Matches: image: <any-registry>/<image_name>:<any-tag>
+    # Example: image: ghcr.io/splunk/opentelemetry-demo/otel-llm:1.4.0
+    escaped_image_name = re.escape(image_name)
+    pattern = rf'(\s+image:\s+)\S+/{escaped_image_name}:\S+'
 
     # Replace with new image
     updated_content, count = re.subn(
