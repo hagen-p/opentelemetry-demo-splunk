@@ -38,8 +38,12 @@ from metrics import (
     init_metrics
 )
 
-# OpenAI
-from openai import OpenAI
+# LangChain
+from langchain_openai import ChatOpenAI
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.tools import tool as langchain_tool
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from google.protobuf.json_format import MessageToJson, MessageToDict
 
@@ -50,43 +54,33 @@ llm_base_url = None
 llm_api_key = None
 llm_model = None
 
-# --- Define the tool for the OpenAI API ---
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_product_reviews",
-            "description": "Executes a SQL query to retrieve reviews for a particular product.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "product_id": {
-                        "type": "string",
-                        "description": "The product ID to fetch product reviews for.",
-                    }
-                },
-                "required": ["product_id"],
-            },
-        }
-    },
-      {
-          "type": "function",
-          "function": {
-              "name": "fetch_product_info",
-              "description": "Retrieves information for a particular product.",
-              "parameters": {
-                  "type": "object",
-                  "properties": {
-                      "product_id": {
-                          "type": "string",
-                          "description": "The product ID to fetch information for.",
-                      }
-                  },
-                  "required": ["product_id"],
-              },
-          }
-      }
-]
+# Global variables for gRPC stub (initialized in main)
+product_catalog_stub = None
+
+# --- Define LangChain tools ---
+@langchain_tool
+def fetch_product_reviews_tool(product_id: str) -> str:
+    """Executes a SQL query to retrieve reviews for a particular product.
+
+    Args:
+        product_id: The product ID to fetch product reviews for.
+
+    Returns:
+        JSON string containing the product reviews.
+    """
+    return fetch_product_reviews(product_id=product_id)
+
+@langchain_tool
+def fetch_product_info_tool(product_id: str) -> str:
+    """Retrieves information for a particular product.
+
+    Args:
+        product_id: The product ID to fetch information for.
+
+    Returns:
+        JSON string containing the product information.
+    """
+    return fetch_product_info(product_id=product_id)
 
 class ProductReviewService(demo_pb2_grpc.ProductReviewServiceServicer):
     def GetProductReviews(self, request, context):
@@ -162,148 +156,127 @@ def get_ai_assistant_response(request_product_id, question):
         span.set_attribute("app.product.id", request_product_id)
         span.set_attribute("app.product.question", question)
 
+        # Check feature flags
         llm_rate_limit_error = check_feature_flag("llmRateLimitError")
+        llm_inaccurate_response = check_feature_flag("llmInaccurateResponse")
+
         logger.info(f"llmRateLimitError feature flag: {llm_rate_limit_error}")
+        logger.info(f"llmInaccurateResponse feature flag: {llm_inaccurate_response}")
+
+        # Handle rate limit error simulation (50% chance)
         if llm_rate_limit_error:
             random_number = random.random()
             logger.info(f"Generated a random number: {str(random_number)}")
-            # return a rate limit error 50% of the time
             if random_number < 0.5:
-
-                # ensure the mock LLM is always used, since we want to generate a 429 error
-                client = OpenAI(
-                    base_url=f"{llm_mock_url}",
-                    # The OpenAI API requires an api_key to be present, but
-                    # our LLM doesn't use it
-                    api_key=f"{llm_api_key}"
-                )
-
-                user_prompt = f"Answer the following question about product ID:{request_product_id}: {question}"
-                messages = [
-                   {"role": "system", "content": "You are a helpful assistant that answers related to a specific product. Use tools as needed to fetch the product reviews and product information. Keep the response brief with no more than 1-2 sentences. If you don't know the answer, just say you don't know."},
-                   {"role": "user", "content": user_prompt}
-                ]
-                logger.info(f"Invoking mock LLM with model: astronomy-llm-rate-limit")
+                logger.info(f"Simulating rate limit error with model: astronomy-llm-rate-limit")
 
                 try:
-                    initial_response = client.chat.completions.create(
+                    # Use mock LLM to trigger 429 error
+                    llm = ChatOpenAI(
+                        base_url=llm_mock_url,
+                        api_key=llm_api_key,
                         model="astronomy-llm-rate-limit",
-                        messages=messages,
-                        tools=tools,
-                        tool_choice="auto"
+                        temperature=0
                     )
+
+                    # Attempt to invoke (will fail with 429)
+                    prompt = ChatPromptTemplate.from_messages([
+                        ("system", "You are a helpful assistant that answers related to a specific product. "
+                                  "Use tools as needed to fetch the product reviews and product information. "
+                                  "Keep the response brief with no more than 1-2 sentences. "
+                                  "If you don't know the answer, just say you don't know."),
+                        ("user", "Answer the following question about product ID:{product_id}: {question}"),
+                        MessagesPlaceholder(variable_name="agent_scratchpad"),
+                    ])
+
+                    tools = [fetch_product_reviews_tool, fetch_product_info_tool]
+                    agent = create_tool_calling_agent(llm, tools, prompt)
+                    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+                    result = agent_executor.invoke({
+                        "product_id": request_product_id,
+                        "question": question
+                    })
+
                 except Exception as e:
                     logger.error(f"Caught Exception: {e}")
-                    # Record the exception
                     span.record_exception(e)
-                    # Set the span status to ERROR
                     span.set_status(Status(StatusCode.ERROR, description=str(e)))
                     ai_assistant_response.response = "The system is unable to process your response. Please try again later."
                     return ai_assistant_response
 
-        # otherwise, continue processing the request as normal
-        client = OpenAI(
-            base_url=f"{llm_base_url}",
-            # The OpenAI API requires an api_key to be present, but
-            # our LLM doesn't use it
-            api_key=f"{llm_api_key}"
-        )
+        # Normal processing with LangChain
+        try:
+            logger.info(f"Creating LangChain agent with model: {llm_model}")
 
-        user_prompt = f"Answer the following question about product ID:{request_product_id}: {question}"
-        messages = [
-           {"role": "system", "content": "You are a helpful assistant that answers related to a specific product. Use tools as needed to fetch the product reviews and product information. Keep the response brief with no more than 1-2 sentences. If you don't know the answer, just say you don't know."},
-           {"role": "user", "content": user_prompt}
-        ]
-
-        # use the LLM to summarize the product reviews
-        initial_response = client.chat.completions.create(
-            model=llm_model,
-            messages=messages,
-            tools=tools,
-            tool_choice="auto"
-        )
-
-        response_message = initial_response.choices[0].message
-        tool_calls = response_message.tool_calls
-
-        logger.info(f"Response message: {response_message}")
-
-        # Check if the model wants to call a tool
-        if tool_calls:
-            logger.info(f"Model wants to call {len(tool_calls)} tool(s)")
-
-            # Append the assistant's message with tool calls
-            messages.append(response_message)
-
-            # Process all tool calls
-            for tool_call in tool_calls:
-                function_name = tool_call.function.name
-                function_args = json.loads(tool_call.function.arguments)
-
-                logger.info(f"Processing tool call: '{function_name}' with arguments: {function_args}")
-
-                if function_name == "fetch_product_reviews":
-                    function_response = fetch_product_reviews(
-                        product_id=function_args.get("product_id")
-                    )
-                    logger.info(f"Function response for fetch_product_reviews: '{function_response}'")
-
-                elif function_name == "fetch_product_info":
-                    function_response = fetch_product_info(
-                        product_id=function_args.get("product_id")
-                    )
-                    logger.info(f"Function response for fetch_product_info: '{function_response}'")
-
-                else:
-                    raise Exception(f'Received unexpected tool call request: {function_name}')
-
-                # Append the tool response
-                messages.append(
-                    {
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": function_name,
-                        "content": function_response,
-                    }
-                )
-
-            llm_inaccurate_response = check_feature_flag("llmInaccurateResponse")
-            logger.info(f"llmInaccurateResponse feature flag: {llm_inaccurate_response}")
-
-            if llm_inaccurate_response and request_product_id == "L9ECAV7KIM":
-                logger.info(f"Returning an inaccurate response for product_id: {request_product_id}")
-                # Add a final user message to ask the LLM to return an inaccurate response
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"Based on the tool results, answer the original question about product ID, but make the answer inaccurate:{request_product_id}. Keep the response brief with no more than 1-2 sentences."
-                    }
-                )
-            else:
-                # Add a final user message to guide the LLM to synthesize the response
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"Based on the tool results, answer the original question about product ID:{request_product_id}. Keep the response brief with no more than 1-2 sentences."
-                    }
-                )
-
-            logger.info(f"Invoking the LLM with the following messages: '{messages}'")
-
-            final_response = client.chat.completions.create(
+            # Create LLM
+            llm = ChatOpenAI(
+                base_url=llm_base_url,
+                api_key=llm_api_key,
                 model=llm_model,
-                messages=messages
+                temperature=0
             )
 
-            result = final_response.choices[0].message.content
+            # Modify system prompt based on inaccurate response flag
+            if llm_inaccurate_response and request_product_id == "L9ECAV7KIM":
+                logger.info(f"Using inaccurate response mode for product_id: {request_product_id}")
+                system_message = (
+                    "You are a helpful assistant that answers related to a specific product. "
+                    "Use tools as needed to fetch the product reviews and product information. "
+                    "Based on the tool results, provide an INACCURATE answer to the question. "
+                    "Keep the response brief with no more than 1-2 sentences."
+                )
+            else:
+                system_message = (
+                    "You are a helpful assistant that answers related to a specific product. "
+                    "Use tools as needed to fetch the product reviews and product information. "
+                    "Keep the response brief with no more than 1-2 sentences. "
+                    "If you don't know the answer, just say you don't know."
+                )
 
-            ai_assistant_response.response = result
+            # Create prompt template
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_message),
+                ("user", "Answer the following question about product ID:{product_id}: {question}"),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
+            ])
 
-            logger.info(f"Returning an AI assistant response: '{result}'")
+            # Create agent with tools
+            tools = [fetch_product_reviews_tool, fetch_product_info_tool]
+            agent = create_tool_calling_agent(llm, tools, prompt)
+            agent_executor = AgentExecutor(
+                agent=agent,
+                tools=tools,
+                verbose=True,
+                return_intermediate_steps=True
+            )
 
-        else:
-            logger.info(f"Returning an AI assistant response: '{response_message}'")
-            ai_assistant_response.response = response_message.content
+            logger.info(f"Invoking LangChain agent for product_id: {request_product_id}")
+
+            # Execute agent
+            result = agent_executor.invoke({
+                "product_id": request_product_id,
+                "question": question
+            })
+
+            # Extract output from result
+            output = result.get("output", "")
+            logger.info(f"LangChain agent returned: '{output}'")
+
+            # Log intermediate steps (tool calls) for debugging
+            if "intermediate_steps" in result:
+                for i, (action, observation) in enumerate(result["intermediate_steps"]):
+                    logger.info(f"Tool call {i+1}: {action.tool} with args {action.tool_input}")
+                    logger.info(f"Tool response {i+1}: {observation[:200]}...")  # Truncate long responses
+
+            ai_assistant_response.response = output
+
+        except Exception as e:
+            logger.error(f"Error in LangChain agent execution: {e}")
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, description=str(e)))
+            ai_assistant_response.response = "I encountered an error processing your question. Please try again."
+            return ai_assistant_response
 
         # Collect metrics for this service
         product_review_svc_metrics["app_ai_assistant_counter"].add(1, {'product.id': request_product_id})
