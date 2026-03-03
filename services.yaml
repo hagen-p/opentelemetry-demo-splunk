@@ -106,7 +106,6 @@ services:
     build: true
     manifest: true
 
-
   - name: demo-namespace
     build: false
     manifest: false  # Disabled - using default namespace instead
@@ -179,10 +178,14 @@ services:
 
   - name: thousandeyes
     build: false
-    manifest: false # false till we sorted out thousand eyes instance and secret issue
+    manifest: true # false till we sorted out thousand eyes instance and secret issue
     replace_registry: false  # Uses thousandeyes/enterprise-agent
 
   - name: valkey-cart
     build: false
     manifest: true
     replace_registry: false  # Uses valkey/valkey for thtis REDIS DB
+
+  - name: order-analytics-forwarder
+    build: true
+    manifest: true
