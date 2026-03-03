@@ -58,6 +58,28 @@ const CartDetail = () => {
           },
         });
 
+        // Create RUM custom span for successful order with order ID
+        if (typeof window !== 'undefined' && (window as any).tracer) {
+          const tracer = (window as any).tracer;
+          const span = tracer.startSpan('OrderPlaced', {
+            attributes: {
+              'workflow.name': 'OrderPlaced',
+              'app.order.id': order.orderId,
+              'app.user.id': userId,
+              'app.order.items.count': order.items?.length || 0,
+              'app.shipping.amount': order.shippingCost?.units || 0,
+              'app.user.currency': selectedCurrency,
+            },
+          });
+
+          span.addEvent('order_placed_successfully', {
+            'app.order.id': order.orderId,
+            'checkout.success': true,
+          });
+
+          span.end();
+        }
+
         push({
           pathname: `/order/confirmation/${order.orderId}`,
           query: { order: JSON.stringify(order) },
@@ -79,8 +101,8 @@ const CartDetail = () => {
               'error': true,
               'error.type': isEmptyCartError ? 'empty_cart' : 'checkout_failed',
               'error.message': errorMessage,
-              'user.id': userId,
-              'cart.items_count': items.length,
+              'app.user.id': userId,
+              'app.cart.items.count': items.length,
             },
           });
 

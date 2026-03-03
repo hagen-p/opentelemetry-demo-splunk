@@ -12,12 +12,17 @@ import CheckoutItem from '../../../../components/CheckoutItem';
 import Layout from '../../../../components/Layout';
 import Recommendations from '../../../../components/Recommendations';
 import AdProvider from '../../../../providers/Ad.provider';
+import SessionGateway from '../../../../gateways/Session.gateway';
+import { useCurrency } from '../../../../providers/Currency.provider';
 import * as S from '../../../../styles/Checkout.styled';
 import { IProductCheckout } from '../../../../types/Cart';
 
+const { userId } = SessionGateway.getSession();
+
 const Checkout: NextPage = () => {
   const { query } = useRouter();
-  const { items = [], shippingAddress, orderId } = JSON.parse((query.order || '{}') as string) as IProductCheckout;
+  const { selectedCurrency } = useCurrency();
+  const { items = [], shippingAddress, orderId, shippingCost } = JSON.parse((query.order || '{}') as string) as IProductCheckout;
 
   // Create a custom span for order confirmation
   useEffect(() => {
@@ -27,23 +32,29 @@ const Checkout: NextPage = () => {
         const tracer = (window as any).tracer;
         const span = tracer.startSpan('order.confirmed', {
           attributes: {
-            'order.id': orderId,
-            'order.items_count': items.length,
-            'order.total_items': items.reduce((sum, item) => sum + item.item.quantity, 0),
+            'app.order.id': orderId,
+            'app.user.id': userId,
+            'app.user.currency': selectedCurrency,
+            'app.order.items.count': items.length,
+            'app.order.total_items': items.reduce((sum, item) => sum + item.item.quantity, 0),
+            'app.shipping.amount': shippingCost?.units || 0,
           },
         });
 
         console.log('Order confirmation span created:', {
           orderId,
+          userId,
+          currency: selectedCurrency,
           itemsCount: items.length,
           totalItems: items.reduce((sum, item) => sum + item.item.quantity, 0),
+          shippingAmount: shippingCost?.units || 0,
         });
 
         // End the span immediately as this is just a marker
         span.end();
       }
     }
-  }, [orderId, items]);
+  }, [orderId, items, selectedCurrency, shippingCost]);
 
   return (
     <AdProvider

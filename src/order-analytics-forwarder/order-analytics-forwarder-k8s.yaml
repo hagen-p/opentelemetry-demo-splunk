@@ -1,0 +1,107 @@
+# Kubernetes manifest for order-analytics-forwarder
+# Consumes orders from Kafka and forwards to AWS Lambda for analytics
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-analytics-forwarder
+  labels:
+    opentelemetry.io/name: order-analytics-forwarder
+    app.kubernetes.io/component: order-analytics-forwarder
+    app.kubernetes.io/name: order-analytics-forwarder
+    app.kubernetes.io/version: 1.6.0
+    app.kubernetes.io/part-of: opentelemetry-demo
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      opentelemetry.io/name: order-analytics-forwarder
+  template:
+    metadata:
+      labels:
+        opentelemetry.io/name: order-analytics-forwarder
+        app.kubernetes.io/component: order-analytics-forwarder
+        app.kubernetes.io/name: order-analytics-forwarder
+    spec:
+      serviceAccountName: opentelemetry-demo
+      containers:
+      - name: order-analytics-forwarder
+        image: ghcr.io/splunk/opentelemetry-demo/otel-order-analytics-forwarder:1.6.0
+        imagePullPolicy: Always
+        env:
+        - name: OTEL_SERVICE_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.labels['app.kubernetes.io/component']
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: OTEL_COLLECTOR_NAME
+          value: $(NODE_IP)
+        - name: OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
+          value: cumulative
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://$(OTEL_COLLECTOR_NAME):4318
+        - name: OTEL_PYTHON_LOG_CORRELATION
+          value: 'true'
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: service.name=$(OTEL_SERVICE_NAME),service.namespace=opentelemetry-demo,service.version=1.6.0,service.kafka=yes
+        # Kafka configuration
+        - name: KAFKA_ADDR
+          value: kafka:9092
+        - name: OTEL_INSTRUMENTATION_KAFKA_EXPERIMENTAL_SPAN_ATTRIBUTES
+          value: 'true'
+        - name: OTEL_INSTRUMENTATION_MESSAGING_EXPERIMENTAL_RECEIVE_TELEMETRY_ENABLED
+          value: 'true'
+        # Feature flags
+        - name: FLAGD_HOST
+          value: flagd
+        - name: FLAGD_PORT
+          value: '8013'
+        # AWS Lambda configuration (optional - set via ConfigMap or Secret)
+        - name: LAMBDA_FUNCTION_NAME
+          value: ''  # Set to your Lambda function name, e.g., "order-analytics-processor"
+        - name: AWS_REGION
+          value: us-east-1
+        # AWS credentials (should be provided via Secret or IAM roles for service accounts)
+        # - name: AWS_ACCESS_KEY_ID
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: aws-credentials
+        #       key: access-key-id
+        # - name: AWS_SECRET_ACCESS_KEY
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: aws-credentials
+        #       key: secret-access-key
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            memory: 256Mi
+      initContainers:
+      - name: wait-for-kafka
+        image: busybox:latest
+        command:
+        - sh
+        - -c
+        - until nc -z -v -w30 kafka 9092; do echo waiting for kafka; sleep 2; done;
+---
+# Optional: ConfigMap for AWS configuration
+# Uncomment and customize as needed
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: order-analytics-forwarder-config
+# data:
+#   LAMBDA_FUNCTION_NAME: "order-analytics-processor"
+#   AWS_REGION: "us-east-1"
+---
+# Optional: Secret for AWS credentials
+# Create this manually with your AWS credentials
+# kubectl create secret generic aws-credentials \
+#   --from-literal=access-key-id=YOUR_ACCESS_KEY \
+#   --from-literal=secret-access-key=YOUR_SECRET_KEY

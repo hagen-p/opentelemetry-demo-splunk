@@ -1,0 +1,45 @@
+{
+  "order_id": "550e8400-e29b-41d4-a716-446655440000",
+  "shipping_tracking_id": "TRACK-2024-03-03-ABC123",
+  "shipping_cost": {
+    "currency_code": "USD",
+    "units": 10,
+    "nanos": 990000000
+  },
+  "shipping_address": {
+    "street_address": "1600 Amphitheatre Parkway",
+    "city": "Mountain View",
+    "state": "CA",
+    "country": "US",
+    "zip_code": "94043"
+  },
+  "items": [
+    {
+      "product_id": "OLJCESPC7Z",
+      "quantity": 1,
+      "cost": {
+        "currency_code": "USD",
+        "units": 18,
+        "nanos": 990000000
+      }
+    },
+    {
+      "product_id": "66VCHSJNUP",
+      "quantity": 2,
+      "cost": {
+        "currency_code": "USD",
+        "units": 9,
+        "nanos": 990000000
+      }
+    },
+    {
+      "product_id": "1YMWWN1N4O",
+      "quantity": 1,
+      "cost": {
+        "currency_code": "USD",
+        "units": 23,
+        "nanos": 990000000
+      }
+    }
+  ]
+}

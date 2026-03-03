@@ -1,0 +1,23 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Kafka consumer
+kafka-python==2.0.2
+
+# AWS Lambda client
+boto3==1.35.90
+
+# OpenTelemetry with Splunk distribution
+splunk-opentelemetry==2.6.0
+
+# Feature flags
+openfeature-provider-flagd==0.2.3
+openfeature-hooks-opentelemetry==0.2.0
+
+# Utilities
+psutil==7.0.0
+python-dotenv==1.2.1
+python-json-logger==4.0.0
+
+# Protobuf for deserializing orders
+protobuf==5.29.2
