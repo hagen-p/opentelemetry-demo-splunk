@@ -27,7 +27,7 @@ spec:
       serviceAccountName: opentelemetry-demo
       containers:
       - name: order-analytics-forwarder
-        image: ghcr.io/splunk/opentelemetry-demo/otel-order-analytics-forwarder:1.6.0
+        image: ghcr.io/hagen-p/opentelemetry-demo-splunk/order-analytics-forwarder:test-1.7
         imagePullPolicy: Always
         env:
         - name: OTEL_SERVICE_NAME
