@@ -34,7 +34,7 @@ export KAFKA_ADDR=localhost:9092
 export OTEL_SERVICE_NAME=order-analytics-forwarder
 # Leave LAMBDA_FUNCTION_NAME empty to use log mode
 
-# 3. Run the service
+# 3. Run the service with Splunk OpenTelemetry instrumentation
 opentelemetry-instrument python order_forwarder.py
 ```
 

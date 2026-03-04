@@ -25,10 +25,13 @@ AWS Lambda (analytics-processor)
 
 - **Kafka Consumer**: Connects to Kafka and consumes from the `orders` topic
 - **AWS Lambda Integration**: Asynchronous invocation of Lambda functions
-- **OpenTelemetry Instrumentation**:
-  - Distributed tracing with custom spans
+- **Splunk OpenTelemetry Instrumentation**:
+  - Uses Splunk's Python distribution for enhanced observability
+  - Distributed tracing with custom spans and parent-child relationships
   - Custom metrics for orders forwarded, errors, and Lambda duration
   - Structured JSON logging with trace correlation
+  - Automatic instrumentation for Kafka, boto3, and HTTP libraries
+  - AlwaysOn Profiling support (if enabled)
 - **Feature Flags**: Runtime configuration via flagd/OpenFeature
 - **Graceful Error Handling**: Retries and error logging
 - **Fallback Mode**: Logs orders when Lambda is not configured
@@ -47,9 +50,12 @@ AWS Lambda (analytics-processor)
 - `AWS_ACCESS_KEY_ID`: AWS access key (or use IAM roles)
 - `AWS_SECRET_ACCESS_KEY`: AWS secret key (or use IAM roles)
 
-#### Optional - OpenTelemetry
+#### Optional - Splunk OpenTelemetry
 - `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP endpoint (default: `http://localhost:4318`)
 - `OTEL_PYTHON_LOG_CORRELATION`: Enable log correlation (default: `true`)
+- `SPLUNK_PROFILER_ENABLED`: Enable AlwaysOn Profiling (default: `false`)
+- `SPLUNK_PROFILER_MEMORY_ENABLED`: Enable memory profiling (default: `false`)
+- `OTEL_RESOURCE_ATTRIBUTES`: Additional resource attributes (e.g., `deployment.environment=production`)
 
 #### Optional - Feature Flags
 - `FLAGD_HOST`: Flagd service host (default: `flagd`)
@@ -89,7 +95,7 @@ export LAMBDA_FUNCTION_NAME=order-analytics-processor
 export AWS_REGION=us-east-1
 export OTEL_SERVICE_NAME=order-analytics-forwarder
 
-# Run with auto-instrumentation
+# Run with Splunk OpenTelemetry auto-instrumentation
 opentelemetry-instrument python order_forwarder.py
 ```
 
