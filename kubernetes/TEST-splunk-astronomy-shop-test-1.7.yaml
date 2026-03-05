@@ -1,6 +1,6 @@
 # Splunk Astronomy Shop Kubernetes Manifest
 # Version: test-1.7
-# Generated on: 2026-03-04T10:21:17Z
+# Generated on: 2026-03-05T11:23:43Z
 #
 # This manifest combines all service deployments for the Splunk Astronomy Shop
 # Services are defined in services.yaml
@@ -785,7 +785,7 @@ spec:
       serviceAccountName: opentelemetry-demo
       containers:
       - name: checkout
-        image: ghcr.io/open-telemetry/demo:2.1.3-checkout
+        image: ghcr.io/hagen-p/opentelemetry-demo-splunk/checkout:test-1.7
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
@@ -2146,7 +2146,7 @@ spec:
       serviceAccountName: opentelemetry-demo
       containers:
       - name: payment
-        image: ghcr.io/splunk/opentelemetry-demo/otel-payment:1.5.0
+        image: ghcr.io/hagen-p/opentelemetry-demo-splunk/otel-payment:test-1.7
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
