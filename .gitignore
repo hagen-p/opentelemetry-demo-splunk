@@ -53,31 +53,5 @@ test/tracetesting/tracetesting-vars.yaml
 *.apk
 
 !src/currency/build
-src/frontend/utils/telemetry/FrontendTracer.ts.not_used
-src/frontend/utils/telemetry/SessionIdProcessor.ts.not_used
-src/cart/src/Dockerfile.singlearch
-src/cart/src/Dockerfile.too_complex
-src/flagd-ui/src/instrumentation.ts.not-used
-.gitignore
-src/payment/charge.js.original
-src/payment/logger.js.not sure
-src/payment/logger.js.original
-src/payment.zip
-src/payment-old
-src/payment/*.bak
-.service-versions.yaml
-dev-repo.yaml
-src/frontend copy/
-src/frontend copy/*
-src/react-native-app/.env
-src/react-native-app/.env
-src/react-native-app/.env
-src/react-native-app/.env.backup
-releases/mobile/*.zip
-src/react-native-app/saucelabs-package/ios/astronomy-shop-ios.zip
-# Confluence files (local use only)
-CONFLUENCE-GUIDE.md
-CONFLUENCE-GUIDE.confluence
-
-# AWS SAM build artifacts
-.aws-sam/
+src/cart/src/Program.cs.bak
+src/flagd/demo.flagd.json.bak
