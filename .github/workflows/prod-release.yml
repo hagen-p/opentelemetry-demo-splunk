@@ -1,4 +1,4 @@
-name: Production Release (Build + Manifest)
+name: Build Prod Release (Build + Manifest)
 # Combined workflow: builds images, updates versions, stitches manifests, creates ONE PR
 # Replaces the two-step flow of prod-build-images.yml → (merge PR) → prod-build-manifest.yml
 
@@ -28,11 +28,6 @@ name: Production Release (Build + Manifest)
         default: 'all'
       no_cache:
         description: 'Disable build cache'
-        required: false
-        type: boolean
-        default: false
-      beta_build:
-        description: 'Beta build (adds -beta suffix to manifests)'
         required: false
         type: boolean
         default: false
@@ -394,24 +389,16 @@ jobs:
         id: stitch
         run: |
           VERSION=$(cat SPLUNK-VERSION)
-
-          if [[ "${{ inputs.beta_build }}" == "true" ]]; then
-            OUTPUT_DIR="kubernetes/beta"
-            EXTRA_SUFFIX="-beta"
-            mkdir -p "$OUTPUT_DIR"
-          else
-            OUTPUT_DIR="kubernetes"
-            EXTRA_SUFFIX=""
-          fi
+          OUTPUT_DIR="kubernetes"
 
           echo "Stitching regular manifest..."
-          .github/scripts/stitch-manifests.sh prod "" "$OUTPUT_DIR" "$EXTRA_SUFFIX"
+          .github/scripts/stitch-manifests.sh prod "" "$OUTPUT_DIR" ""
 
           echo "Stitching DIAB manifest..."
-          .github/scripts/stitch-manifests.sh prod diab "$OUTPUT_DIR" "$EXTRA_SUFFIX"
+          .github/scripts/stitch-manifests.sh prod diab "$OUTPUT_DIR" ""
 
-          MANIFEST_FILE="${OUTPUT_DIR}/splunk-astronomy-shop-${VERSION}${EXTRA_SUFFIX}.yaml"
-          MANIFEST_FILE_DIAB="${OUTPUT_DIR}/splunk-astronomy-shop-${VERSION}-diab${EXTRA_SUFFIX}.yaml"
+          MANIFEST_FILE="${OUTPUT_DIR}/splunk-astronomy-shop-${VERSION}.yaml"
+          MANIFEST_FILE_DIAB="${OUTPUT_DIR}/splunk-astronomy-shop-${VERSION}-diab.yaml"
 
           echo "manifest_file=$MANIFEST_FILE" >> $GITHUB_OUTPUT
           echo "manifest_file_diab=$MANIFEST_FILE_DIAB" >> $GITHUB_OUTPUT
@@ -604,7 +591,7 @@ jobs:
       - name: Upload manifests as artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: astronomy-shop-manifests-${{ needs.determine-version.outputs.version }}${{ inputs.beta_build == true && '-beta' || '' }}
+          name: astronomy-shop-manifests-${{ needs.determine-version.outputs.version }}
           path: |
             ${{ steps.stitch.outputs.manifest_file }}
             ${{ steps.stitch.outputs.manifest_file_diab }}
