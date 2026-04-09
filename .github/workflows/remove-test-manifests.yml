@@ -1,15 +1,15 @@
-name: Remove TEST Manifests
+name: Remove TEST/BETA Manifests
 
 on:
   workflow_dispatch:
     inputs:
       confirmation:
-        description: 'Type "CONFIRM" to remove all TEST manifest files'
+        description: 'Type "CONFIRM" to remove all TEST and BETA manifest files'
         required: true
         type: string
 
 jobs:
-  remove-test-files:
+  remove-test-beta-files:
     # Only run in forks, not in the main splunk/opentelemetry-demo repo
     if: github.repository != 'splunk/opentelemetry-demo'
     runs-on: ubuntu-latest
@@ -17,37 +17,56 @@ jobs:
       - name: Validate confirmation
         run: |
           if [ "${{ github.event.inputs.confirmation }}" != "CONFIRM" ]; then
-            echo "❌ Confirmation failed. You must type 'CONFIRM' to proceed."
+            echo "Confirmation failed. You must type 'CONFIRM' to proceed."
             exit 1
           fi
-          echo "✓ Confirmation received"
+          echo "Confirmation received"
 
       - uses: actions/checkout@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Find TEST manifest files
+      - name: Find TEST and BETA manifest files
         id: find_files
         run: |
-          echo "Looking for TEST Splunk manifest files (kubernetes/TEST-splunk*.yaml)..."
+          echo "Looking for TEST and BETA manifest files..."
+          FOUND="false"
+          FILES=""
+
+          # Find TEST-splunk* files in kubernetes/
           if ls kubernetes/TEST-splunk*.yaml 2>/dev/null; then
-            echo "found=true" >> $GITHUB_OUTPUT
-            echo "files<<EOF" >> $GITHUB_OUTPUT
-            ls kubernetes/TEST-splunk*.yaml >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-          else
-            echo "found=false" >> $GITHUB_OUTPUT
-            echo "No TEST Splunk manifest files found."
+            FOUND="true"
+            FILES="${FILES}$(ls kubernetes/TEST-splunk*.yaml 2>/dev/null)"$'\n'
           fi
 
-      - name: Remove TEST manifest files
+          # Find BETA-splunk* files in kubernetes/
+          if ls kubernetes/BETA-splunk*.yaml 2>/dev/null; then
+            FOUND="true"
+            FILES="${FILES}$(ls kubernetes/BETA-splunk*.yaml 2>/dev/null)"$'\n'
+          fi
+
+          # Find files in kubernetes/BETA/ directory
+          if ls kubernetes/BETA/*.yaml 2>/dev/null; then
+            FOUND="true"
+            FILES="${FILES}$(ls kubernetes/BETA/*.yaml 2>/dev/null)"$'\n'
+          fi
+
+          echo "found=$FOUND" >> $GITHUB_OUTPUT
+          if [ "$FOUND" = "true" ]; then
+            echo "files<<EOF" >> $GITHUB_OUTPUT
+            echo "$FILES" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Remove TEST and BETA manifest files
         if: steps.find_files.outputs.found == 'true'
         run: |
-          echo "Removing TEST Splunk manifest files:"
-          ls kubernetes/TEST-splunk*.yaml
+          echo "Removing TEST and BETA manifest files:"
           rm -f kubernetes/TEST-splunk*.yaml
-          echo "✓ TEST Splunk manifest files removed"
+          rm -f kubernetes/BETA-splunk*.yaml
+          rm -rf kubernetes/BETA/
+          echo "TEST and BETA manifest files removed"
 
       - name: Commit and push changes
         if: steps.find_files.outputs.found == 'true'
@@ -60,23 +79,23 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "chore: remove TEST manifest files" \
+            git commit -m "chore: remove TEST/BETA manifest files" \
               -m "Automatically removed by remove-test-manifests workflow"
             git push
-            echo "✓ Changes committed and pushed"
+            echo "Changes committed and pushed"
           fi
 
       - name: Summary
         run: |
           if [ "${{ steps.find_files.outputs.found }}" == "true" ]; then
-            echo "### ✓ TEST Splunk Manifest Cleanup Complete" >> $GITHUB_STEP_SUMMARY
+            echo "### TEST/BETA Manifest Cleanup Complete" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Removed files:" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             echo "${{ steps.find_files.outputs.files }}" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           else
-            echo "### ℹ️ No TEST Splunk Manifest Files Found" >> $GITHUB_STEP_SUMMARY
+            echo "### No TEST/BETA Manifest Files Found" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "No TEST Splunk manifest files (kubernetes/TEST-splunk*.yaml) were found in the repository." >> $GITHUB_STEP_SUMMARY
+            echo "No TEST or BETA manifest files were found in the repository." >> $GITHUB_STEP_SUMMARY
           fi
