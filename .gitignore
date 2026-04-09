@@ -81,3 +81,8 @@ CONFLUENCE-GUIDE.confluence
 
 # AWS SAM build artifacts
 .aws-sam/
+src/cart/src/Program.cs.bak
+src/flagd/demo.flagd.json.bak
+
+# BETA manifests (fork/test only, never push to upstream)
+kubernetes/BETA/

@@ -1,0 +1,462 @@
+name: Build BETA Release (Build + Manifest)
+# Combined workflow for forks: builds images, updates manifests, stitches BETA manifests, commits directly
+# BETA version of prod-release.yml - CANNOT run on splunk/opentelemetry-demo
+
+"on":
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag for the images (e.g., 2.1.3-test)'
+        required: true
+        type: string
+        default: 'test'
+      services:
+        description: 'Services to build (comma-separated, or "all")'
+        required: false
+        type: string
+        default: 'all'
+      no_cache:
+        description: 'Disable build cache'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Step 1: Prepare build matrix
+  # ─────────────────────────────────────────────
+  prepare-matrix:
+    # Only run in forks, not in the main splunk/opentelemetry-demo repo
+    if: github.repository != 'splunk/opentelemetry-demo'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      registry: ${{ steps.set-matrix.outputs.registry }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - run: pip install pyyaml
+
+      - name: Generate build matrix
+        id: set-matrix
+        run: |
+          python3 << 'PYTHON_SCRIPT'
+          import yaml, json, os
+
+          with open('services.yaml', 'r') as f:
+              config = yaml.safe_load(f)
+
+          # Auto-detect registry from dev-repo.yaml or GitHub repo info
+          dev_registry = None
+          try:
+              with open('dev-repo.yaml', 'r') as f:
+                  dev_config = yaml.safe_load(f)
+                  dev_registry = dev_config.get('registry', {}).get('dev')
+          except FileNotFoundError:
+              print("dev-repo.yaml not found, using auto-detected registry")
+
+          if not dev_registry:
+              repo_owner = "${{ github.repository_owner }}".lower()
+              repo_name = "${{ github.event.repository.name }}".lower()
+              dev_registry = f"ghcr.io/{repo_owner}/{repo_name}"
+              print(f"Auto-detected registry: {dev_registry}")
+
+          registry = dev_registry
+          print(f"Using registry: {registry}")
+
+          requested = "${{ inputs.services }}".strip()
+          services_to_build = []
+
+          for svc in config.get('services', []):
+              name = svc.get('name')
+              if not svc.get('build', False):
+                  continue
+
+              if requested == 'all':
+                  include = True
+              else:
+                  include = name in [s.strip() for s in requested.split(',')]
+
+              if include:
+                  platform = svc.get('platform', 'linux/amd64,linux/arm64')
+                  dockerfile = svc.get('dockerfile', f'src/{name}/Dockerfile')
+
+                  if name == 'payment':
+                      for variant, args in [('A', 'VERSION=A'), ('B', 'VERSION=B')]:
+                          services_to_build.append({
+                              'name': name, 'variant': variant, 'platform': platform,
+                              'dockerfile': dockerfile, 'build_args': args
+                          })
+                  else:
+                      services_to_build.append({
+                          'name': name, 'variant': '', 'platform': platform,
+                          'dockerfile': dockerfile, 'build_args': ''
+                      })
+
+          if not services_to_build:
+              matrix = {'include': [{'name': '_skip', 'variant': '', 'platform': 'linux/amd64', 'dockerfile': 'none', 'build_args': ''}]}
+          else:
+              matrix = {'include': services_to_build}
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'matrix={json.dumps(matrix)}\n')
+              f.write(f'registry={registry}\n')
+
+          print(f"Services to build: {len(services_to_build)}")
+          for svc in services_to_build:
+              v = f" (variant: {svc['variant']})" if svc['variant'] else ""
+              print(f"  - {svc['name']}{v}")
+          PYTHON_SCRIPT
+
+      - name: Summary
+        run: |
+          echo "### Build Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** \`${{ inputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Registry:** \`${{ steps.set-matrix.outputs.registry }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Services:** \`${{ inputs.services }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **No Cache:** ${{ inputs.no_cache }}" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────
+  # Step 2: Build and push images
+  # ─────────────────────────────────────────────
+  build-images:
+    needs: [prepare-matrix]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Check if skip
+        id: check-skip
+        run: |
+          if [[ "${{ matrix.name }}" == "_skip" ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/checkout@v5
+        if: steps.check-skip.outputs.skip != 'true'
+
+      - uses: docker/setup-buildx-action@v4
+        if: steps.check-skip.outputs.skip != 'true'
+
+      - name: Log in to GHCR
+        if: steps.check-skip.outputs.skip != 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image name
+        if: steps.check-skip.outputs.skip != 'true'
+        id: image
+        run: |
+          REGISTRY="${{ needs.prepare-matrix.outputs.registry }}"
+          VERSION="${{ inputs.version }}"
+
+          # Determine image name
+          case "${{ matrix.name }}" in
+            accounting|ad|cart|fraud-detection|frontend|frontend-proxy|image-provider|llm|payment|product-reviews|recommendation)
+              IMAGE_NAME="otel-${{ matrix.name }}"
+              ;;
+            *)
+              IMAGE_NAME="${{ matrix.name }}"
+              ;;
+          esac
+
+          if [ -n "${{ matrix.variant }}" ]; then
+            VERSION_TAG="${VERSION}-$(echo '${{ matrix.variant }}' | tr '[:upper:]' '[:lower:]')"
+          else
+            VERSION_TAG="${VERSION}"
+          fi
+
+          echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "full_image=${REGISTRY}/${IMAGE_NAME}:${VERSION_TAG}" >> $GITHUB_OUTPUT
+          echo "version_tag=${VERSION_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Check for Dockerfile
+        if: steps.check-skip.outputs.skip != 'true'
+        id: check
+        run: |
+          if [ -f "${{ matrix.dockerfile }}" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push image
+        if: steps.check.outputs.exists == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.image.outputs.full_image }}
+          build-args: ${{ matrix.build_args }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          no-cache: ${{ inputs.no_cache }}
+
+      - name: Image info
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          echo "### Built: ${{ matrix.name }}${{ matrix.variant && format(' ({0})', matrix.variant) || '' }}" >> $GITHUB_STEP_SUMMARY
+          echo "Image: \`${{ steps.image.outputs.full_image }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────
+  # Step 3: Update manifests + stitch + commit
+  # ─────────────────────────────────────────────
+  update-and-commit:
+    needs: [prepare-matrix, build-images]
+    if: ${{ success() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - run: pip install pyyaml
+
+      - name: Make scripts executable
+        run: |
+          chmod +x .github/scripts/update-manifest-images.py
+          chmod +x .github/scripts/stitch-manifests.sh
+          chmod +x .github/scripts/get-services.py
+
+      - name: Update service versions
+        run: |
+          python3 << 'PYTHON_SCRIPT'
+          import yaml
+          import os
+
+          version = "${{ inputs.version }}"
+          services_input = "${{ inputs.services }}".strip()
+
+          print(f"Updating service versions to: {version}")
+          print(f"Services built: {services_input}")
+
+          # Check if version tracking file exists, create if not
+          if not os.path.exists('.service-versions.yaml'):
+              print(".service-versions.yaml not found, creating initial file...")
+              initial_config = {
+                  'default_version': version,
+                  'services': {}
+              }
+              with open('.service-versions.yaml', 'w') as f:
+                  f.write('# Service Version Tracking\n')
+                  f.write('# This file tracks the last built version for each service\n')
+                  f.write('# Updated automatically by build workflows\n')
+                  f.write('# DO NOT EDIT MANUALLY\n\n')
+                  yaml.dump(initial_config, f, default_flow_style=False, sort_keys=False)
+
+          with open('.service-versions.yaml', 'r') as f:
+              version_config = yaml.safe_load(f)
+
+          if services_input == 'all':
+              with open('services.yaml', 'r') as f:
+                  config = yaml.safe_load(f)
+              services_to_update = [
+                  svc['name'] for svc in config.get('services', [])
+                  if svc.get('build', False)
+              ]
+          else:
+              services_to_update = [s.strip() for s in services_input.split(',')]
+
+          for service in services_to_update:
+              if service in version_config['services']:
+                  old_version = version_config['services'][service]
+                  version_config['services'][service] = version
+                  print(f"  {service}: {old_version} -> {version}")
+              else:
+                  version_config['services'][service] = version
+                  print(f"  {service}: (new) -> {version}")
+
+          if services_input == 'all':
+              version_config['default_version'] = version
+
+          with open('.service-versions.yaml', 'w') as f:
+              f.write('# Service Version Tracking\n')
+              f.write('# This file tracks the last built version for each service\n')
+              f.write('# Updated automatically by build workflows\n')
+              f.write('# DO NOT EDIT MANUALLY\n\n')
+              yaml.dump(version_config, f, default_flow_style=False, sort_keys=False)
+
+          print("\nService versions updated")
+          PYTHON_SCRIPT
+
+      - name: Update source manifests with new image references
+        run: |
+          REGISTRY="${{ needs.prepare-matrix.outputs.registry }}"
+          VERSION="${{ inputs.version }}"
+          SERVICES_INPUT="${{ inputs.services }}"
+
+          if [ "$SERVICES_INPUT" = "all" ]; then
+            SERVICES_TO_UPDATE=$(python3 <<'PYTHON_SCRIPT'
+          import yaml
+          with open('services.yaml', 'r') as f:
+              config = yaml.safe_load(f)
+          services = [svc['name'] for svc in config.get('services', []) if svc.get('build', False)]
+          print(' '.join(services))
+          PYTHON_SCRIPT
+          )
+          else
+            SERVICES_TO_UPDATE=$(echo "$SERVICES_INPUT" | tr ',' ' ')
+          fi
+
+          echo "Updating source manifests for: $SERVICES_TO_UPDATE"
+
+          for SERVICE in $SERVICES_TO_UPDATE; do
+            # Determine image name
+            case "$SERVICE" in
+              accounting|ad|cart|fraud-detection|frontend|frontend-proxy|image-provider|llm|payment|product-reviews|recommendation)
+                IMAGE_NAME="otel-${SERVICE}"
+                ;;
+              *)
+                IMAGE_NAME="${SERVICE}"
+                ;;
+            esac
+
+            if [ "$SERVICE" = "payment" ]; then
+              for VARIANT_FILE in payment-vA-k8s.yaml payment-vB-k8s.yaml; do
+                MANIFEST_PATH="src/payment/$VARIANT_FILE"
+                if [ -f "$MANIFEST_PATH" ]; then
+                  VARIANT_SUFFIX=$(echo "$VARIANT_FILE" | grep -oP 'v[AB]' | tr '[:upper:]' '[:lower:]' | sed 's/v//')
+                  NEW_IMAGE="${REGISTRY}/otel-payment:${VERSION}-${VARIANT_SUFFIX}"
+                  sed -i.bak -E "s|image:[ ]+[^ ]+/otel-payment:[^ ]+|image: ${NEW_IMAGE}|g" "$MANIFEST_PATH"
+                  rm -f "${MANIFEST_PATH}.bak"
+                  echo "  Updated $MANIFEST_PATH"
+                fi
+              done
+            else
+              python3 .github/scripts/update-manifest-images.py "$SERVICE" "$REGISTRY" "$IMAGE_NAME" "$VERSION"
+            fi
+          done
+
+      - name: Create temporary version file for stitching
+        run: |
+          cp SPLUNK-VERSION SPLUNK-VERSION.backup
+          echo "${{ inputs.version }}" > SPLUNK-VERSION
+
+      - name: Stitch BETA manifests
+        id: stitch
+        run: |
+          VERSION="${{ inputs.version }}"
+          OUTPUT_DIR="kubernetes/BETA"
+          mkdir -p "$OUTPUT_DIR"
+
+          echo "Stitching regular manifest..."
+          .github/scripts/stitch-manifests.sh "" "" "$OUTPUT_DIR" ""
+
+          echo "Stitching DIAB manifest..."
+          .github/scripts/stitch-manifests.sh "" diab "$OUTPUT_DIR" ""
+
+          MANIFEST_FILE="${OUTPUT_DIR}/splunk-astronomy-shop-${VERSION}.yaml"
+          MANIFEST_FILE_DIAB="${OUTPUT_DIR}/splunk-astronomy-shop-${VERSION}-diab.yaml"
+
+          echo "Regular: $MANIFEST_FILE"
+          echo "DIAB: $MANIFEST_FILE_DIAB"
+
+          echo "manifest_file=$MANIFEST_FILE" >> $GITHUB_OUTPUT
+          echo "manifest_file_diab=$MANIFEST_FILE_DIAB" >> $GITHUB_OUTPUT
+
+      - name: Restore SPLUNK-VERSION
+        run: mv SPLUNK-VERSION.backup SPLUNK-VERSION
+
+      - name: Validate manifest YAML
+        run: |
+          MANIFEST_FILE="${{ steps.stitch.outputs.manifest_file }}"
+          MANIFEST_FILE_DIAB="${{ steps.stitch.outputs.manifest_file_diab }}"
+
+          echo "### Validation Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if python3 -c "import yaml; docs=list(yaml.safe_load_all(open('$MANIFEST_FILE'))); print(f'Regular: {len(docs)} documents')"; then
+            echo "Regular manifest: valid" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Regular manifest: INVALID" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          if python3 -c "import yaml; docs=list(yaml.safe_load_all(open('$MANIFEST_FILE_DIAB'))); print(f'DIAB: {len(docs)} documents')"; then
+            echo "DIAB manifest: valid" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "DIAB manifest: INVALID" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+      - name: Commit and push
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          MANIFEST_FILE="${{ steps.stitch.outputs.manifest_file }}"
+          MANIFEST_FILE_DIAB="${{ steps.stitch.outputs.manifest_file_diab }}"
+
+          # Stage source manifests (updated image refs)
+          git add src/*/*-k8s.yaml
+
+          # Force-add BETA manifests (kubernetes/BETA/ is in .gitignore)
+          git add -f "$MANIFEST_FILE" "$MANIFEST_FILE_DIAB"
+
+          # Do NOT stage SPLUNK-VERSION or .service-versions.yaml
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "beta-release: ${{ inputs.version }}" \
+              -m "Services: ${{ inputs.services }}" \
+              -m "" \
+              -m "Includes:" \
+              -m "- Source k8s manifests updated with new image references" \
+              -m "- BETA manifests stitched (regular + DIAB)"
+            git push
+            echo "Committed and pushed"
+          fi
+
+      - name: Upload manifests as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: astronomy-shop-manifests-${{ inputs.version }}-beta
+          path: |
+            ${{ steps.stitch.outputs.manifest_file }}
+            ${{ steps.stitch.outputs.manifest_file_diab }}
+          retention-days: 7
+
+  # ─────────────────────────────────────────────
+  # Summary
+  # ─────────────────────────────────────────────
+  summary:
+    needs: [prepare-matrix, build-images, update-and-commit]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build Summary
+        run: |
+          echo "## BETA Release Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Version** | \`${{ inputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Services** | ${{ inputs.services }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Registry** | \`${{ needs.prepare-matrix.outputs.registry }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Images built -> Source manifests updated -> BETA manifests stitched -> Committed to branch" >> $GITHUB_STEP_SUMMARY
