@@ -9,6 +9,7 @@ on:
       - 'pb/**'
       - 'src/*/genproto/**'
       - 'src/**/demo_pb2*.py'
+      - 'src/frontend/protos/**'
       - 'docker-gen-proto.sh'
   workflow_dispatch:
   workflow_call:
