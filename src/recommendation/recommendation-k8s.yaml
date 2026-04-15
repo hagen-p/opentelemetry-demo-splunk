@@ -47,7 +47,7 @@ spec:
       serviceAccountName: opentelemetry-demo
       containers:
       - name: recommendation
-        image: ghcr.io/splunk/opentelemetry-demo/otel-recommendation:1.8.1
+        image: ghcr.io/hagen-p/opentelemetry-demo-splunk/otel-recommendation:splunk2.2.0-beta
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
@@ -88,6 +88,17 @@ spec:
           value: '750'
         - name: SPLUNK_PROFILER_ENABLED
           value: 'true'
+        # PostgreSQL connection for DBMon Cartesian demo
+        - name: POSTGRES_HOST
+          value: "postgresql"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "otel"
+        - name: POSTGRES_USER
+          value: "demo_app_user"
+        - name: POSTGRES_PASSWORD
+          value: "demo_password"
         resources:
           limits:
             memory: 500Mi

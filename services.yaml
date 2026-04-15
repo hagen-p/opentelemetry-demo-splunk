@@ -122,20 +122,20 @@ services:
   - name: planning
     build: true
     manifest: true
+    group: lambda
 
-  - name: postgres-setup
+  - name: postgresql-setup
     build: false
     manifest: true
 
-  - name: postgres
+  - name: postgresql
     build: false
     manifest: true
-    replace_registry: false  # Uses ghcr.io/open-telemetry/demo (standard)
+    replace_registry: false  # Uses stock postgres image
 
   - name: product-catalog
-    build: false
+    build: true
     manifest: true
-    replace_registry: false  # Uses ghcr.io/open-telemetry/demo (standard)
 
   - name: product-reviews
     build: true
@@ -162,15 +162,18 @@ services:
   - name: shop-dc-shim
     build: true
     manifest: true
+    group: dc-shim
 
   - name: shop-dc-shim-db
     build: false
     manifest: true
     replace_registry: false  # Uses mcr.microsoft.com/mssql
+    group: dc-shim
 
   - name: shop-dc-loadgenerator
     build: true
     manifest: true
+    group: dc-shim
 
   - name: sql-server-fraud-setup
     build: false

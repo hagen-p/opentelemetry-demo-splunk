@@ -28,7 +28,7 @@ spec:
       serviceAccountName: opentelemetry-demo
       containers:
       - name: fraud-detection
-        image: ghcr.io/splunk/opentelemetry-demo/otel-fraud-detection:1.8.1
+        image: ghcr.io/hagen-p/opentelemetry-demo-splunk/otel-fraud-detection:test-2.0
         imagePullPolicy: Always
         env:
         - name: OTEL_SERVICE_NAME
@@ -52,14 +52,12 @@ spec:
           value: '8013'
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: http://$(OTEL_COLLECTOR_NAME):4318
-        - name: OTEL_INSTRUMENTATION_KAFKA_EXPERIMENTAL_SPAN_ATTRIBUTES
-          value: 'true'
-        - name: OTEL_INSTRUMENTATION_MESSAGING_EXPERIMENTAL_RECEIVE_TELEMETRY_ENABLED
-          value: 'true'
+        - name: OTEL_INSTRUMENTATION_KAFKA_CLIENTS_ENABLED
+          value: 'false'
         - name: OTEL_INSTRUMENTATION_SPLUNK_JDBC_ENABLED
           value: 'true'
         - name: OTEL_RESOURCE_ATTRIBUTES
-          value: service.name=$(OTEL_SERVICE_NAME),service.namespace=opentelemetry-demo,service.version=2.1.3,service.kafka=spanlink
+          value: service.name=$(OTEL_SERVICE_NAME),service.namespace=opentelemetry-demo,service.version=2.1.3,service.kafka=propagation
         - name: SQL_SERVER_HOST
           value: sql-server-fraud.default.svc.cluster.local
         - name: SQL_SERVER_PORT

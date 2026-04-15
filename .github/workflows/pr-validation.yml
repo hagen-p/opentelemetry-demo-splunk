@@ -35,6 +35,16 @@ jobs:
             echo "✓ prod-build-manifest.yml has repository check"
           fi
 
+          # Check prod-release.yml (combined release workflow)
+          if [ -f .github/workflows/prod-release.yml ]; then
+            if ! grep -q "^[[:space:]]*if: github.repository == 'splunk/opentelemetry-demo'" .github/workflows/prod-release.yml; then
+              ERRORS="${ERRORS}❌ prod-release.yml: Missing or commented repository check\n"
+              echo "ERROR: prod-release.yml missing repository check"
+            else
+              echo "✓ prod-release.yml has repository check"
+            fi
+          fi
+
           if [ -n "$ERRORS" ]; then
             echo "has_errors=true" >> $GITHUB_OUTPUT
             echo "errors<<EOF" >> $GITHUB_OUTPUT
@@ -110,63 +120,63 @@ jobs:
               body: body
             });
 
-  check-test-manifests:
+  check-test-and-beta-manifests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Check for TEST manifest files
+      - name: Check for TEST and BETA manifest files
         id: check_files
         run: |
-          echo "Checking for TEST Splunk manifest files in PR (kubernetes/TEST-splunk*.yaml)..."
+          echo "Checking for TEST/BETA manifest files in PR..."
 
           # Get the base branch
           BASE_SHA=$(git merge-base origin/${{ github.base_ref }} HEAD)
 
-          # Check if any TEST Splunk manifest files exist in the PR diff
-          if git diff --name-only $BASE_SHA HEAD | grep -E '^kubernetes/TEST-splunk.*\.yaml$'; then
+          # Check for TEST-splunk*, BETA-splunk*, or kubernetes/BETA/ files
+          if git diff --name-only $BASE_SHA HEAD | grep -iE '^kubernetes/(TEST-|BETA-|BETA/).*\.yaml$'; then
             echo "found=true" >> $GITHUB_OUTPUT
             echo "files<<EOF" >> $GITHUB_OUTPUT
-            git diff --name-only $BASE_SHA HEAD | grep -E '^kubernetes/TEST-splunk.*\.yaml$' >> $GITHUB_OUTPUT
+            git diff --name-only $BASE_SHA HEAD | grep -iE '^kubernetes/(TEST-|BETA-|BETA/).*\.yaml$' >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
           else
             echo "found=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Fail if TEST files found
+      - name: Fail if TEST/BETA files found
         if: steps.check_files.outputs.found == 'true'
         run: |
-          echo "❌ ERROR: TEST Splunk manifest files detected in this PR"
+          echo "❌ ERROR: TEST/BETA manifest files detected in this PR"
           echo ""
-          echo "The following TEST Splunk manifest files were found:"
+          echo "The following TEST/BETA manifest files were found:"
           echo "${{ steps.check_files.outputs.files }}"
           echo ""
-          echo "TEST Splunk manifests should not be merged to the main branch."
+          echo "TEST and BETA manifests should not be merged to the main branch."
           echo ""
-          echo "To remove these files, run the 'Remove TEST Manifests' workflow:"
-          echo "  1. Go to: Actions → Remove TEST Manifests"
+          echo "To remove these files, run the 'Remove TEST/BETA Manifests' workflow:"
+          echo "  1. Go to: Actions → Remove TEST/BETA Manifests"
           echo "  2. Click 'Run workflow'"
           echo "  3. Select your branch: ${{ github.head_ref }}"
           echo "  4. Type 'CONFIRM' in the confirmation field"
           echo "  5. Click 'Run workflow'"
           echo ""
           echo "Or manually remove them with:"
-          echo "  git rm kubernetes/TEST-splunk*.yaml"
-          echo "  git commit -m 'chore: remove TEST Splunk manifests'"
+          echo "  git rm kubernetes/TEST-splunk*.yaml kubernetes/BETA-splunk*.yaml kubernetes/BETA/*.yaml"
+          echo "  git commit -m 'chore: remove TEST/BETA manifests'"
           echo "  git push"
           exit 1
 
       - name: Success
         if: steps.check_files.outputs.found == 'false'
         run: |
-          echo "✓ No TEST Splunk manifest files found in this PR"
+          echo "✓ No TEST/BETA manifest files found in this PR"
           echo "### ✓ PR Validation Passed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "No TEST Splunk manifest files detected." >> $GITHUB_STEP_SUMMARY
+          echo "No TEST or BETA manifest files detected." >> $GITHUB_STEP_SUMMARY
 
-      - name: Add PR comment if TEST files found
+      - name: Add PR comment if TEST/BETA files found
         if: steps.check_files.outputs.found == 'true' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
@@ -175,16 +185,16 @@ jobs:
             const fileList = files.map(f => `- \`${f}\``).join('\n');
             const branchName = context.payload.pull_request.head.ref;
 
-            const body = `## ❌ TEST Splunk Manifest Files Detected
+            const body = `## ❌ TEST/BETA Manifest Files Detected
 
-            This PR contains TEST Splunk manifest files that should not be merged to main:
+            This PR contains TEST or BETA manifest files that should not be merged to main:
 
-            ` + fileList + `
+            ${fileList}
 
             ### How to fix this:
 
             **Option 1: Use the automated workflow**
-            1. Go to [Actions → Remove TEST Manifests](../actions/workflows/remove-test-manifests.yml)
+            1. Go to [Actions → Remove TEST/BETA Manifests](../actions/workflows/remove-test-manifests.yml)
             2. Click "Run workflow"
             3. Select branch: \`${branchName}\`
             4. Type \`CONFIRM\` in the confirmation field
@@ -192,8 +202,8 @@ jobs:
 
             **Option 2: Remove manually**
             \`\`\`bash
-            git rm kubernetes/TEST-splunk*.yaml
-            git commit -m "chore: remove TEST Splunk manifests"
+            git rm kubernetes/TEST-splunk*.yaml kubernetes/BETA-splunk*.yaml kubernetes/BETA/*.yaml
+            git commit -m "chore: remove TEST/BETA manifests"
             git push
             \`\`\`
 
