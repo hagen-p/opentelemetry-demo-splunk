@@ -492,11 +492,14 @@ jobs:
 
       - name: Validate manifest YAML
         run: |
-          MANIFEST_FILE="${{ steps.stitch.outputs.manifest_file }}"
-          MANIFEST_FILE_DIAB="${{ steps.stitch.outputs.manifest_file_diab }}"
-
-          python3 -c "import yaml; docs=list(yaml.safe_load_all(open('$MANIFEST_FILE'))); print(f'Regular: {len(docs)} documents')"
-          python3 -c "import yaml; docs=list(yaml.safe_load_all(open('$MANIFEST_FILE_DIAB'))); print(f'DIAB: {len(docs)} documents')"
+          for MFILE in "${{ steps.stitch.outputs.manifest_file }}" \
+                       "${{ steps.stitch.outputs.manifest_file_diab }}" \
+                       "${{ steps.stitch.outputs.manifest_lambda }}" \
+                       "${{ steps.stitch.outputs.manifest_dc_shim }}"; do
+            if [ -f "$MFILE" ]; then
+              python3 -c "import yaml; docs=list(yaml.safe_load_all(open('$MFILE'))); print(f'$(basename $MFILE): {len(docs)} documents')"
+            fi
+          done
 
       - name: Show image version breakdown
         run: |
@@ -608,6 +611,9 @@ jobs:
 
           # Stage source manifests and values file (NOT stitched manifests)
           git add src/*/*-k8s.yaml
+          git add "$MANIFEST_FILE" "$MANIFEST_FILE_DIAB"
+          [ -f "${{ steps.stitch.outputs.manifest_lambda }}" ] && git add "${{ steps.stitch.outputs.manifest_lambda }}"
+          [ -f "${{ steps.stitch.outputs.manifest_dc_shim }}" ] && git add "${{ steps.stitch.outputs.manifest_dc_shim }}"
           git add kubernetes/splunk-astronomy-shop-*-values.yaml 2>/dev/null || true
 
           if git diff --staged --quiet; then
