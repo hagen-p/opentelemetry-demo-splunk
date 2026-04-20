@@ -1,6 +1,10 @@
 name: Build Prod Release (Build + Manifest)
 # Combined workflow: builds images, updates versions, stitches manifests, creates ONE PR
 # Replaces the two-step flow of prod-build-images.yml → (merge PR) → prod-build-manifest.yml
+#
+# Beta mode: builds images tagged {version}-beta, creates a GitHub pre-release with
+# manifests attached. Does NOT bump SPLUNK-VERSION or create a PR.
+# Use beta to test a release candidate before committing to the version.
 
 "on":
   workflow_dispatch:
@@ -26,6 +30,11 @@ name: Build Prod Release (Build + Manifest)
         required: false
         type: string
         default: 'all'
+      beta:
+        description: 'Beta build — tags images with -beta suffix, creates pre-release, does NOT bump SPLUNK-VERSION'
+        required: false
+        type: boolean
+        default: false
       no_cache:
         description: 'Disable build cache'
         required: false
@@ -41,6 +50,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      base_version: ${{ steps.version.outputs.base_version }}
+      is_beta: ${{ steps.version.outputs.is_beta }}
       is_hotfix: ${{ steps.version.outputs.is_hotfix }}
       is_full_release: ${{ steps.version.outputs.is_full_release }}
       is_custom: ${{ steps.version.outputs.is_custom }}
@@ -119,13 +130,27 @@ jobs:
             IS_CUSTOM="true"
           fi
 
+          # Beta: append -beta suffix, don't actually bump anything
+          IS_BETA="${{ inputs.beta }}"
+          BASE_VERSION="$VERSION"
+          if [[ "$IS_BETA" == "true" ]]; then
+            VERSION="${VERSION}-beta"
+            IS_FULL_RELEASE="false"  # Beta never triggers full release behavior
+          fi
+
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "base_version=$BASE_VERSION" >> $GITHUB_OUTPUT
+          echo "is_beta=$IS_BETA" >> $GITHUB_OUTPUT
           echo "is_hotfix=$IS_HOTFIX" >> $GITHUB_OUTPUT
           echo "is_full_release=$IS_FULL_RELEASE" >> $GITHUB_OUTPUT
           echo "is_custom=$IS_CUSTOM" >> $GITHUB_OUTPUT
 
           echo "### Version Information" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          if [[ "$IS_BETA" == "true" ]]; then
+            echo "> 🧪 **BETA BUILD** — images tagged \`${VERSION}\`, no version commit" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "| Type | Version |" >> $GITHUB_STEP_SUMMARY
           echo "|------|---------|" >> $GITHUB_STEP_SUMMARY
           echo "| Current | \`$CURRENT_VERSION\` |" >> $GITHUB_STEP_SUMMARY
@@ -298,7 +323,7 @@ jobs:
           echo "Image: \`${{ steps.image.outputs.full_image }}\`" >> $GITHUB_STEP_SUMMARY
 
   # ─────────────────────────────────────────────
-  # Step 4: Update versions + stitch manifests + single PR
+  # Step 4: Update versions + stitch manifests + PR (or pre-release for beta)
   # ─────────────────────────────────────────────
   update-and-release:
     needs: [determine-version, prepare-matrix, build-images]
@@ -330,10 +355,10 @@ jobs:
         run: echo "old_version=$(cat SPLUNK-VERSION)" >> $GITHUB_OUTPUT
 
       - name: Update SPLUNK-VERSION
-        if: ${{ needs.determine-version.outputs.is_hotfix == 'false' && inputs.version_bump != 'none (keep current)' && inputs.version_bump != 'custom' }}
+        if: ${{ needs.determine-version.outputs.is_beta != 'true' && needs.determine-version.outputs.is_hotfix == 'false' && inputs.version_bump != 'none (keep current)' && inputs.version_bump != 'custom' }}
         run: |
           CURRENT=$(cat SPLUNK-VERSION)
-          NEW="${{ needs.determine-version.outputs.version }}"
+          NEW="${{ needs.determine-version.outputs.base_version }}"
           echo "$NEW" > SPLUNK-VERSION
           echo "✅ SPLUNK-VERSION: $CURRENT → $NEW"
 
@@ -388,10 +413,13 @@ jobs:
       - name: Stitch production manifests
         id: stitch
         run: |
-          VERSION=$(cat SPLUNK-VERSION)
+          VERSION="${{ needs.determine-version.outputs.version }}"
           OUTPUT_DIR="kubernetes"
 
-          echo "Stitching regular manifest..."
+          # Temporarily set SPLUNK-VERSION to the target version (stitch-manifests.sh reads it)
+          echo "$VERSION" > SPLUNK-VERSION
+
+          echo "Stitching regular manifest (version: $VERSION)..."
           .github/scripts/stitch-manifests.sh prod "" "$OUTPUT_DIR" ""
 
           echo "Stitching DIAB manifest..."
@@ -412,7 +440,17 @@ jobs:
             [ -f "$MFILE" ] && echo "  [ok] $(basename $MFILE)" || echo "  [--] $(basename $MFILE) (not generated)"
           done
 
+          # For non-beta: restore SPLUNK-VERSION to the base version (will be committed)
+          # For beta: restore to original (nothing gets committed)
+          IS_BETA="${{ needs.determine-version.outputs.is_beta }}"
+          if [[ "$IS_BETA" == "true" ]]; then
+            echo "${{ steps.old-version.outputs.old_version }}" > SPLUNK-VERSION
+          else
+            echo "${{ needs.determine-version.outputs.base_version }}" > SPLUNK-VERSION
+          fi
+
       - name: Ensure values.yaml exists for this version
+        if: ${{ needs.determine-version.outputs.is_beta != 'true' }}
         id: values
         run: |
           VERSION=$(cat SPLUNK-VERSION)
@@ -481,7 +519,67 @@ jobs:
             --base-version "$VERSION" \
             --summary-only >> $GITHUB_STEP_SUMMARY
 
-      - name: Create single Pull Request
+      - name: Create GitHub pre-release (beta only)
+        if: ${{ needs.determine-version.outputs.is_beta == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.determine-version.outputs.version }}"
+          SERVICES="${{ inputs.services }}"
+
+          # Collect manifest files
+          ASSETS=""
+          for MFILE in "${{ steps.stitch.outputs.manifest_file }}" \
+                       "${{ steps.stitch.outputs.manifest_file_diab }}" \
+                       "${{ steps.stitch.outputs.manifest_lambda }}" \
+                       "${{ steps.stitch.outputs.manifest_dc_shim }}"; do
+            [ -f "$MFILE" ] && ASSETS="$ASSETS $MFILE"
+          done
+
+          # Delete existing pre-release if regenerating
+          if gh release view "v${VERSION}" &>/dev/null; then
+            echo "Replacing existing pre-release v${VERSION}..."
+            gh release delete "v${VERSION}" --yes 2>/dev/null || true
+            git push origin --delete "v${VERSION}" 2>/dev/null || true
+          fi
+
+          # Create pre-release with manifests attached
+          gh release create "v${VERSION}" $ASSETS \
+            --title "v${VERSION} (beta)" \
+            --prerelease \
+            --notes "$(printf '%s\n' \
+              "## Beta Release ${VERSION}" \
+              "" \
+              "**Base version:** \`${{ needs.determine-version.outputs.base_version }}\`" \
+              "**Services:** ${SERVICES}" \
+              "**Registry:** \`${{ needs.prepare-matrix.outputs.registry }}\`" \
+              "" \
+              "### Deploy for testing" \
+              "\`\`\`bash" \
+              "# Download manifests from this release, then:" \
+              "kubectl apply -f splunk-astronomy-shop-${VERSION}.yaml" \
+              "\`\`\`" \
+              "" \
+              "> This is a **pre-release** for testing. Run the workflow again without" \
+              "> the beta flag to create the final release and bump SPLUNK-VERSION." \
+              "" \
+              "---" \
+              "Generated by Production Release workflow (beta mode)"
+            )"
+
+          RELEASE_URL=$(gh release view "v${VERSION}" --json url -q .url)
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🧪 Beta Pre-Release Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**[v${VERSION}]($RELEASE_URL)**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download manifests from the release to deploy and test." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "When satisfied, re-run this workflow **without** the beta flag to finalize." >> $GITHUB_STEP_SUMMARY
+
+      - name: Create Pull Request (non-beta)
+        if: ${{ needs.determine-version.outputs.is_beta != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -493,12 +591,10 @@ jobs:
           IS_FULL_RELEASE="${{ needs.determine-version.outputs.is_full_release }}"
           IS_CUSTOM="${{ needs.determine-version.outputs.is_custom }}"
           SERVICES="${{ inputs.services }}"
-          MANIFEST_FILE="${{ steps.stitch.outputs.manifest_file }}"
-          MANIFEST_FILE_DIAB="${{ steps.stitch.outputs.manifest_file_diab }}"
 
           BRANCH_NAME="release/${VERSION}"
 
-          # Stage all changes
+          # Stage source changes only (no stitched manifests)
           if [[ "$IS_HOTFIX" == "true" ]]; then
             git add .hotfix.yaml
           fi
@@ -513,7 +609,7 @@ jobs:
             fi
           fi
 
-          # Stage source manifests, stitched manifests, and values file
+          # Stage source manifests and values file (NOT stitched manifests)
           git add src/*/*-k8s.yaml
           git add "$MANIFEST_FILE" "$MANIFEST_FILE_DIAB"
           [ -f "${{ steps.stitch.outputs.manifest_lambda }}" ] && git add "${{ steps.stitch.outputs.manifest_lambda }}"
@@ -550,8 +646,7 @@ jobs:
             -m "Includes:" \
             -m "- Container images built and pushed" \
             -m "- SPLUNK-VERSION updated" \
-            -m "- Source k8s manifests updated" \
-            -m "- Production manifests stitched (regular + DIAB)"
+            -m "- Source k8s manifests updated"
 
           # Delete remote branch if exists
           git push origin --delete "$BRANCH_NAME" 2>/dev/null || true
@@ -569,17 +664,14 @@ jobs:
             "- ✅ Container images built and pushed to \`ghcr.io/splunk/opentelemetry-demo\`" \
             "- ✅ SPLUNK-VERSION updated" \
             "- ✅ Source k8s manifests updated with new image references" \
-            "- ✅ Production manifests stitched: \`${MANIFEST_FILE}\` + DIAB" \
             "" \
-            "### Deploy" \
-            "\`\`\`bash" \
-            "kubectl apply -f ${MANIFEST_FILE}" \
-            "\`\`\`" \
+            "### Manifests" \
+            "Stitched manifests will be attached to the GitHub Release when this PR is merged." \
             "" \
             "See the **Image Versions in Manifest** section in the workflow summary for the full breakdown." \
             "" \
             "---" \
-            "🤖 Generated by Production Release workflow"
+            "Generated by Production Release workflow"
           )
 
           gh pr create \
@@ -597,7 +689,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Branch: \`$BRANCH_NAME\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Merge this PR to apply all changes at once." >> $GITHUB_STEP_SUMMARY
+          echo "Merge this PR to apply all changes." >> $GITHUB_STEP_SUMMARY
+          echo "Stitched manifests will be attached to the release automatically." >> $GITHUB_STEP_SUMMARY
 
       - name: Upload manifests as artifacts
         uses: actions/upload-artifact@v4
@@ -620,15 +713,29 @@ jobs:
     steps:
       - name: Build Summary
         run: |
-          echo "## 🎉 Production Release Complete" >> $GITHUB_STEP_SUMMARY
+          IS_BETA="${{ needs.determine-version.outputs.is_beta }}"
+
+          if [[ "$IS_BETA" == "true" ]]; then
+            echo "## 🧪 Beta Release Complete" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Production Release Complete" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| **Version** | \`${{ needs.determine-version.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Bump** | ${{ inputs.version_bump }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Services** | ${{ inputs.services }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Beta** | ${{ needs.determine-version.outputs.is_beta }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Registry** | \`${{ needs.prepare-matrix.outputs.registry }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Images built → ✅ Versions updated → ✅ Manifests stitched → ✅ PR created" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> **One PR to review and merge. No second workflow needed.**" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "$IS_BETA" == "true" ]]; then
+            echo "✅ Images built → ✅ Manifests stitched → ✅ Pre-release created" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> **Deploy the beta manifests to test. Re-run without beta to finalize.**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ Images built → ✅ Versions updated → ✅ Manifests stitched → ✅ PR created" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> **Merge the PR. Manifests are attached to the release after merge.**" >> $GITHUB_STEP_SUMMARY
+          fi
