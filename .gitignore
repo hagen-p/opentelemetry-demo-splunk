@@ -62,3 +62,8 @@ test/tracetesting/tracetesting-vars.yaml
 !src/currency/build
 
 planning-lambda/Planning_Init/.aws-sam/*
+
+# Generated/stitched Kubernetes manifests (attached to GitHub Releases instead)
+kubernetes/splunk-astronomy-shop-*.yaml
+!kubernetes/splunk-astronomy-shop-*-values.yaml
+kubernetes/beta/

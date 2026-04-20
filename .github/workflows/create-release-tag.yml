@@ -8,14 +8,13 @@ on:
       - main
 
 jobs:
-  create-tag:
+  create-tag-and-release:
     # Only run in production repo when a release PR is merged
     if: |
       github.repository == 'splunk/opentelemetry-demo' &&
       github.event.pull_request.merged == true &&
       (
-        startsWith(github.event.pull_request.head.ref, 'release/images-') ||
-        startsWith(github.event.pull_request.head.ref, 'release/manifest-')
+        startsWith(github.event.pull_request.head.ref, 'release/')
       )
     runs-on: ubuntu-latest
     permissions:
@@ -27,6 +26,14 @@ jobs:
         with:
           fetch-depth: 0
           ref: main  # Check out main after merge
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install pyyaml
 
       - name: Get version from SPLUNK-VERSION
         id: version
@@ -41,10 +48,10 @@ jobs:
           TAG="v${{ steps.version.outputs.version }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "⚠️  Tag $TAG already exists"
+            echo "Tag $TAG already exists"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
-            echo "✅ Tag $TAG does not exist, will create"
+            echo "Tag $TAG does not exist, will create"
           fi
 
       - name: Create and push git tag
@@ -60,25 +67,118 @@ jobs:
 
           # Create annotated tag
           git tag -a "$TAG" -m "Release $VERSION" \
-            -m "Full release with all services updated" \
             -m "Merged PR: #${{ github.event.pull_request.number }}"
 
           # Push tag
           git push origin "$TAG"
 
-          echo "✅ Release tag $TAG created and pushed"
+          echo "Release tag $TAG created and pushed"
 
-          echo "### 🏷️ Release Tag Created" >> $GITHUB_STEP_SUMMARY
+      - name: Stitch production manifests
+        id: stitch
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          OUTPUT_DIR="kubernetes"
+
+          chmod +x .github/scripts/stitch-manifests.sh
+
+          echo "Stitching regular manifest..."
+          .github/scripts/stitch-manifests.sh prod "" "$OUTPUT_DIR" ""
+
+          echo "Stitching DIAB manifest..."
+          .github/scripts/stitch-manifests.sh prod diab "$OUTPUT_DIR" ""
+
+          MANIFEST_FILE="${OUTPUT_DIR}/splunk-astronomy-shop-${VERSION}.yaml"
+          MANIFEST_FILE_DIAB="${OUTPUT_DIR}/splunk-astronomy-shop-${VERSION}-diab.yaml"
+          MANIFEST_LAMBDA="${OUTPUT_DIR}/splunk-astronomy-shop-${VERSION}-lambda.yaml"
+          MANIFEST_DC_SHIM="${OUTPUT_DIR}/splunk-astronomy-shop-${VERSION}-dc-shim.yaml"
+
+          echo "manifest_file=$MANIFEST_FILE" >> $GITHUB_OUTPUT
+          echo "manifest_file_diab=$MANIFEST_FILE_DIAB" >> $GITHUB_OUTPUT
+          echo "manifest_lambda=$MANIFEST_LAMBDA" >> $GITHUB_OUTPUT
+          echo "manifest_dc_shim=$MANIFEST_DC_SHIM" >> $GITHUB_OUTPUT
+
+          echo "Generated manifests:"
+          for MFILE in "$MANIFEST_FILE" "$MANIFEST_FILE_DIAB" "$MANIFEST_LAMBDA" "$MANIFEST_DC_SHIM"; do
+            [ -f "$MFILE" ] && echo "  [ok] $(basename $MFILE)" || echo "  [--] $(basename $MFILE) (not generated)"
+          done
+
+      - name: Create GitHub Release with manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
+
+          # Collect manifest files
+          ASSETS=""
+          for MFILE in "${{ steps.stitch.outputs.manifest_file }}" \
+                       "${{ steps.stitch.outputs.manifest_file_diab }}" \
+                       "${{ steps.stitch.outputs.manifest_lambda }}" \
+                       "${{ steps.stitch.outputs.manifest_dc_shim }}"; do
+            [ -f "$MFILE" ] && ASSETS="$ASSETS $MFILE"
+          done
+
+          # Delete existing beta pre-release for this version if it exists
+          if gh release view "${TAG}-beta" &>/dev/null; then
+            echo "Cleaning up beta pre-release..."
+            gh release delete "${TAG}-beta" --yes 2>/dev/null || true
+            git push origin --delete "${TAG}-beta" 2>/dev/null || true
+          fi
+
+          # Delete existing release if regenerating
+          if gh release view "$TAG" &>/dev/null; then
+            echo "Replacing existing release $TAG..."
+            gh release delete "$TAG" --yes --cleanup-tag=false 2>/dev/null || true
+          fi
+
+          # Create release with manifests
+          gh release create "$TAG" $ASSETS \
+            --title "v${VERSION}" \
+            --notes "$(printf '%s\n' \
+              "## Release ${VERSION}" \
+              "" \
+              "**Merged PR:** #${{ github.event.pull_request.number }}" \
+              "**PR Title:** ${{ github.event.pull_request.title }}" \
+              "" \
+              "### Manifests" \
+              "Download the manifest files attached to this release:" \
+              "" \
+              "| Manifest | Description |" \
+              "|----------|-------------|" \
+              "| \`splunk-astronomy-shop-${VERSION}.yaml\` | Core services |" \
+              "| \`splunk-astronomy-shop-${VERSION}-diab.yaml\` | DIAB (includes ingress) |" \
+              "| \`splunk-astronomy-shop-${VERSION}-lambda.yaml\` | Lambda planning service |" \
+              "| \`splunk-astronomy-shop-${VERSION}-dc-shim.yaml\` | DC shim + db + loadgen |" \
+              "" \
+              "### Deploy" \
+              "\`\`\`bash" \
+              "# Download from release" \
+              "gh release download v${VERSION} -p '*.yaml'" \
+              "" \
+              "# Deploy core services" \
+              "kubectl apply -f splunk-astronomy-shop-${VERSION}.yaml" \
+              "\`\`\`" \
+              "" \
+              "---" \
+              "Generated by Create Release Tag workflow"
+            )"
+
+          RELEASE_URL=$(gh release view "$TAG" --json url -q .url)
+
+          echo "### Release Created" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Tag:** \`$TAG\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** \`$VERSION\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release:** [$TAG]($RELEASE_URL)" >> $GITHUB_STEP_SUMMARY
           echo "- **Merged PR:** #${{ github.event.pull_request.number }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **PR Title:** ${{ github.event.pull_request.title }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Manifests attached to release as downloadable assets." >> $GITHUB_STEP_SUMMARY
 
       - name: Tag already exists
         if: steps.check-tag.outputs.exists == 'true'
         run: |
-          echo "### ⚠️ Tag Already Exists" >> $GITHUB_STEP_SUMMARY
+          echo "### Tag Already Exists" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Tag \`v${{ steps.version.outputs.version }}\` already exists." >> $GITHUB_STEP_SUMMARY
-          echo "No new tag created." >> $GITHUB_STEP_SUMMARY
+          echo "No new tag created. Release may need manual update." >> $GITHUB_STEP_SUMMARY
