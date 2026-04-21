@@ -396,14 +396,45 @@ func (cs *checkout) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (
 	// send to kafka only if kafka broker address is set
 	if cs.kafkaBrokerSvcAddr != "" {
 		// Set baggage with context not available in the Kafka message payload
-		userIDMember, _ := baggage.NewMember("user.id", req.UserId)
-		currencyMember, _ := baggage.NewMember("user.currency", req.UserCurrency)
-		emailMember, _ := baggage.NewMember("user.email", req.Email)
-		txMember, _ := baggage.NewMember("payment.transaction.id", txID)
-		totalMember, _ := baggage.NewMember("order.total", fmt.Sprintf("%.2f", totalPriceFloat))
-		loyaltyMember, _ := baggage.NewMember("loyalty.tier", "gold")
-		bag, _ := baggage.New(userIDMember, currencyMember, emailMember, txMember, totalMember, loyaltyMember)
+		userIDMember, _ := baggage.NewMember("app.user.id", req.UserId)
+		currencyMember, _ := baggage.NewMember("app.user.currency", req.UserCurrency)
+		emailMember, _ := baggage.NewMember("app.user.email", req.Email)
+		txMember, _ := baggage.NewMember("app.payment.transaction.id", txID)
+		totalMember, _ := baggage.NewMember("app.order.total", fmt.Sprintf("%.2f", totalPriceFloat))
+		bag, _ := baggage.New(userIDMember, currencyMember, emailMember, txMember, totalMember)
 		ctx = baggage.ContextWithBaggage(ctx, bag)
+
+		// Log available context for baggage decisions
+		logger.LogAttrs(ctx, slog.LevelInfo, "kafka baggage context",
+			slog.String("req.UserId", req.UserId),
+			slog.String("req.UserCurrency", req.UserCurrency),
+			slog.String("req.Email", req.Email),
+			slog.String("txID", txID),
+			slog.Float64("totalPriceFloat", totalPriceFloat),
+			slog.Float64("shippingCostFloat", shippingCostFloat),
+			slog.String("orderResult.OrderId", orderResult.OrderId),
+			slog.String("orderResult.ShippingTrackingId", orderResult.ShippingTrackingId),
+			slog.Int("orderResult.Items", len(orderResult.Items)),
+		)
+		// Log existing baggage from upstream (e.g. frontend)
+		existingBag := baggage.FromContext(ctx)
+		for _, m := range existingBag.Members() {
+			logger.LogAttrs(ctx, slog.LevelInfo, "existing baggage",
+				slog.String("key", m.Key()),
+				slog.String("value", m.Value()),
+			)
+		}
+		// Log span attributes
+		logger.LogAttrs(ctx, slog.LevelInfo, "span attributes on PlaceOrder",
+			slog.String("app.user.id", req.UserId),
+			slog.String("app.user.currency", req.UserCurrency),
+			slog.String("app.order.id", orderResult.OrderId),
+			slog.Float64("app.shipping.amount", shippingCostFloat),
+			slog.Float64("app.order.amount", totalPriceFloat),
+			slog.Int("app.order.items.count", len(orderResult.Items)),
+			slog.String("app.shipping.tracking.id", orderResult.ShippingTrackingId),
+			slog.String("app.payment.transaction.id", txID),
+		)
 
 		logger.Info("sending to postProcessor")
 		cs.sendToPostProcessor(ctx, orderResult)
