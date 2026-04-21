@@ -35,6 +35,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/baggage"
 	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -394,6 +395,15 @@ func (cs *checkout) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (
 
 	// send to kafka only if kafka broker address is set
 	if cs.kafkaBrokerSvcAddr != "" {
+		// Set baggage with context not available in the Kafka message payload
+		userIDMember, _ := baggage.NewMember("user.id", req.UserId)
+		currencyMember, _ := baggage.NewMember("user.currency", req.UserCurrency)
+		emailMember, _ := baggage.NewMember("user.email", req.Email)
+		txMember, _ := baggage.NewMember("payment.transaction.id", txID)
+		totalMember, _ := baggage.NewMember("order.total", fmt.Sprintf("%.2f", totalPriceFloat))
+		bag, _ := baggage.New(userIDMember, currencyMember, emailMember, txMember, totalMember)
+		ctx = baggage.ContextWithBaggage(ctx, bag)
+
 		logger.Info("sending to postProcessor")
 		cs.sendToPostProcessor(ctx, orderResult)
 	}
@@ -718,7 +728,7 @@ func (cs *checkout) sendToPostProcessor(ctx context.Context, result *pb.OrderRes
 		Value: sarama.ByteEncoder(message),
 	}
 
-	// Inject tracing info into message
+	// Inject tracing info and baggage into message
 	span := createProducerSpan(ctx, &msg)
 	defer span.End()
 
