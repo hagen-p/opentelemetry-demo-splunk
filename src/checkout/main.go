@@ -398,10 +398,9 @@ func (cs *checkout) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (
 		// Set baggage with context not available in the Kafka message payload
 		userIDMember, _ := baggage.NewMember("app.user.id", req.UserId)
 		currencyMember, _ := baggage.NewMember("app.user.currency", req.UserCurrency)
-		emailMember, _ := baggage.NewMember("app.user.email", req.Email)
 		txMember, _ := baggage.NewMember("app.payment.transaction.id", txID)
 		totalMember, _ := baggage.NewMember("app.order.total", fmt.Sprintf("%.2f", totalPriceFloat))
-		bag, _ := baggage.New(userIDMember, currencyMember, emailMember, txMember, totalMember)
+		bag, _ := baggage.New(userIDMember, currencyMember, txMember, totalMember)
 		ctx = baggage.ContextWithBaggage(ctx, bag)
 
 		// Log available context for baggage decisions
