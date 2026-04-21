@@ -47,7 +47,7 @@ spec:
       serviceAccountName: opentelemetry-demo
       containers:
       - name: checkout
-        image: ghcr.io/hagen-p/opentelemetry-demo-splunk/checkout:2.2.0-kafka-test
+        image: ghcr.io/hagen-p/opentelemetry-demo-splunk/checkout:kafka-220-full
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080

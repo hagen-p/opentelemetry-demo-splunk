@@ -47,7 +47,7 @@ spec:
       serviceAccountName: opentelemetry-demo
       containers:
       - name: ad
-        image: ghcr.io/splunk/opentelemetry-demo/otel-ad:2.0.0
+        image: ghcr.io/hagen-p/opentelemetry-demo-splunk/otel-ad:kafka-220-full
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
