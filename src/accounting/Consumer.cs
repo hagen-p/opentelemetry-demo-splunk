@@ -103,12 +103,13 @@ internal class Consumer : IDisposable
                             new KeyValuePair<string, object?>("messaging.operation", "process"),
                         });
 
-                    // Add baggage entries to the activity
+                    // Add baggage entries as both baggage and span attributes
                     if (activity != null)
                     {
                         foreach (var entry in baggage)
                         {
                             activity.AddBaggage(entry.Key, entry.Value);
+                            activity.SetTag(entry.Key, entry.Value);
                         }
                     }
 

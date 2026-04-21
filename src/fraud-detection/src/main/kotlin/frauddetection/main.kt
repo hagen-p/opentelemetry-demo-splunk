@@ -142,6 +142,11 @@ fun main() {
                         .startSpan()
 
                     try {
+                        // Set baggage entries as span attributes so they're visible in traces
+                        extractedBaggage.forEach { key, value ->
+                            span.setAttribute(key, value.value)
+                        }
+
                         // Make the span current with baggage from the producer
                         val contextWithBaggage = Context.current().with(span).with(extractedBaggage)
                         contextWithBaggage.makeCurrent().use {
