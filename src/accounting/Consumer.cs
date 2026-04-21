@@ -62,8 +62,56 @@ internal class Consumer : IDisposable
             {
                 try
                 {
-                    using var activity = MyActivitySource.StartActivity("order-consumed",  ActivityKind.Internal);
                     var consumeResult = _consumer.Consume();
+
+                    // Extract trace context from Kafka headers and create a span link
+                    var links = new List<ActivityLink>();
+                    var baggage = new List<KeyValuePair<string, string?>>();
+                    var traceparent = GetHeaderValue(consumeResult.Message.Headers, "traceparent");
+                    var tracestate = GetHeaderValue(consumeResult.Message.Headers, "tracestate");
+
+                    if (traceparent != null && ActivityContext.TryParse(traceparent, tracestate, out var producerContext))
+                    {
+                        links.Add(new ActivityLink(producerContext));
+                    }
+
+                    // Extract baggage from Kafka headers
+                    var baggageHeader = GetHeaderValue(consumeResult.Message.Headers, "baggage");
+                    if (baggageHeader != null)
+                    {
+                        foreach (var entry in baggageHeader.Split(','))
+                        {
+                            var parts = entry.Trim().Split('=', 2);
+                            if (parts.Length == 2)
+                            {
+                                baggage.Add(new KeyValuePair<string, string?>(
+                                    Uri.UnescapeDataString(parts[0]),
+                                    Uri.UnescapeDataString(parts[1])));
+                            }
+                        }
+                    }
+
+                    using var activity = MyActivitySource.StartActivity(
+                        "orders process",
+                        ActivityKind.Consumer,
+                        parentContext: default,
+                        links: links,
+                        tags: new[]
+                        {
+                            new KeyValuePair<string, object?>("messaging.system", "kafka"),
+                            new KeyValuePair<string, object?>("messaging.destination.name", TopicName),
+                            new KeyValuePair<string, object?>("messaging.operation", "process"),
+                        });
+
+                    // Add baggage entries to the activity
+                    if (activity != null)
+                    {
+                        foreach (var entry in baggage)
+                        {
+                            activity.AddBaggage(entry.Key, entry.Value);
+                        }
+                    }
+
                     ProcessMessage(consumeResult.Message);
                 }
                 catch (ConsumeException e)
@@ -80,6 +128,20 @@ internal class Consumer : IDisposable
             _logger.LogInformation("Closing consumer");
 
             _consumer.Close();
+        }
+    }
+
+    private static string? GetHeaderValue(Headers? headers, string key)
+    {
+        if (headers == null) return null;
+        try
+        {
+            var header = headers.GetLastBytes(key);
+            return header != null ? System.Text.Encoding.UTF8.GetString(header) : null;
+        }
+        catch (KeyNotFoundException)
+        {
+            return null;
         }
     }
 

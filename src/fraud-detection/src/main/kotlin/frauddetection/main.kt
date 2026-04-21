@@ -22,6 +22,7 @@ import dev.openfeature.sdk.ImmutableContext
 import dev.openfeature.sdk.Value
 import dev.openfeature.sdk.OpenFeatureAPI
 import io.opentelemetry.api.GlobalOpenTelemetry
+import io.opentelemetry.api.baggage.Baggage
 import io.opentelemetry.api.trace.Span
 import io.opentelemetry.api.trace.SpanKind
 import io.opentelemetry.api.trace.StatusCode
@@ -123,23 +124,27 @@ fun main() {
                 .fold(totalCount) { accumulator, record ->
                     val newCount = accumulator + 1
 
-                    // Extract parent trace context from Kafka message headers
-                    val parentContext = propagator.extract(Context.current(), record, KafkaHeadersGetter)
+                    // Extract trace context and baggage from Kafka message headers
+                    val extractedContext = propagator.extract(Context.current(), record, KafkaHeadersGetter)
 
-                    // Create a span for processing this message, with parent relationship to continue the trace
-                    val span = tracer.spanBuilder("fraud-detection.process")
-                        .setParent(parentContext)
+                    // Extract baggage from the propagated context
+                    val extractedBaggage = Baggage.fromContext(extractedContext)
+
+                    // Create a span as child of the producer span (parent-child relationship)
+                    val span = tracer.spanBuilder("orders process")
+                        .setParent(extractedContext)
                         .setSpanKind(SpanKind.CONSUMER)
                         .setAttribute("messaging.system", "kafka")
-                        .setAttribute("messaging.destination", topic)
+                        .setAttribute("messaging.destination.name", topic)
                         .setAttribute("messaging.operation", "process")
                         .setAttribute("messaging.kafka.partition", record.partition().toLong())
                         .setAttribute("messaging.kafka.offset", record.offset())
                         .startSpan()
 
                     try {
-                        // Make the span current for the processing context
-                        span.makeCurrent().use {
+                        // Make the span current with baggage from the producer
+                        val contextWithBaggage = Context.current().with(span).with(extractedBaggage)
+                        contextWithBaggage.makeCurrent().use {
                             // Kafka experiment: Simulate consumer-side delay for lag spike demo
                             if (getFeatureFlagValue("kafkaQueueProblems") > 0) {
                                 logger.info("FeatureFlag 'kafkaQueueProblems' is enabled, sleeping 1 second")
