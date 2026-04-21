@@ -401,7 +401,8 @@ func (cs *checkout) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (
 		emailMember, _ := baggage.NewMember("user.email", req.Email)
 		txMember, _ := baggage.NewMember("payment.transaction.id", txID)
 		totalMember, _ := baggage.NewMember("order.total", fmt.Sprintf("%.2f", totalPriceFloat))
-		bag, _ := baggage.New(userIDMember, currencyMember, emailMember, txMember, totalMember)
+		loyaltyMember, _ := baggage.NewMember("loyalty.tier", "gold")
+		bag, _ := baggage.New(userIDMember, currencyMember, emailMember, txMember, totalMember, loyaltyMember)
 		ctx = baggage.ContextWithBaggage(ctx, bag)
 
 		logger.Info("sending to postProcessor")
