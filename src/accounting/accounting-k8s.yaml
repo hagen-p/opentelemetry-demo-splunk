@@ -41,7 +41,7 @@ spec:
             value: "3"
       containers:
       - name: accounting
-        image: ghcr.io/hagen-p/opentelemetry-demo-splunk/otel-accounting:2.2.0-test-kafka
+        image: ghcr.io/hagen-p/opentelemetry-demo-splunk/otel-accounting:kafkka-bagage-2.20
         imagePullPolicy: Always
         env:
         - name: OTEL_SERVICE_NAME

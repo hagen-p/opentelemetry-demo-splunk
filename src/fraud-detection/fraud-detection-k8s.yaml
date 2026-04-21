@@ -28,7 +28,7 @@ spec:
       serviceAccountName: opentelemetry-demo
       containers:
       - name: fraud-detection
-        image: ghcr.io/hagen-p/opentelemetry-demo-splunk/otel-fraud-detection:2.2.0-test-kafka
+        image: ghcr.io/hagen-p/opentelemetry-demo-splunk/otel-fraud-detection:kafkka-bagage-2.20
         imagePullPolicy: Always
         env:
         - name: OTEL_SERVICE_NAME
