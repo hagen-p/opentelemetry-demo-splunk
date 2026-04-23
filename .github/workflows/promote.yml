@@ -100,10 +100,14 @@ jobs:
           # Source files (from kubernetes/)
           MANIFEST="kubernetes/splunk-astronomy-shop-${VERSION}.yaml"
           MANIFEST_DIAB="kubernetes/splunk-astronomy-shop-${VERSION}-diab.yaml"
+          MANIFEST_LAMBDA="kubernetes/splunk-astronomy-shop-${VERSION}-lambda.yaml"
+          MANIFEST_DC_SHIM="kubernetes/splunk-astronomy-shop-${VERSION}-dc-shim.yaml"
           VALUES="kubernetes/splunk-astronomy-shop-${VERSION}-values.yaml"
 
           echo "MANIFEST=${MANIFEST}" >> $GITHUB_ENV
           echo "MANIFEST_DIAB=${MANIFEST_DIAB}" >> $GITHUB_ENV
+          echo "MANIFEST_LAMBDA=${MANIFEST_LAMBDA}" >> $GITHUB_ENV
+          echo "MANIFEST_DC_SHIM=${MANIFEST_DC_SHIM}" >> $GITHUB_ENV
           echo "VALUES=${VALUES}" >> $GITHUB_ENV
 
           echo "### Selected Configuration" >> $GITHUB_STEP_SUMMARY
@@ -162,6 +166,19 @@ jobs:
             fi
           fi
 
+          # Lambda and dc-shim are optional
+          if [ -f "$MANIFEST_LAMBDA" ]; then
+            echo "✅ Lambda manifest: \`$MANIFEST_LAMBDA\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ Lambda manifest not found (optional): \`$MANIFEST_LAMBDA\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ -f "$MANIFEST_DC_SHIM" ]; then
+            echo "✅ DC-Shim manifest: \`$MANIFEST_DC_SHIM\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ DC-Shim manifest not found (optional): \`$MANIFEST_DC_SHIM\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
           if [ $MISSING -eq 1 ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "::error::Some manifest files are missing. Check kubernetes/ directory."
@@ -183,15 +200,24 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### PROD Deployment" >> $GITHUB_STEP_SUMMARY
 
-          # Copy versioned files
-          cp "$MANIFEST" target/splunk-astronomy-shop/
-          cp "$VALUES" target/splunk-astronomy-shop/
+          PROD_DIR="target/splunk-astronomy-shop/splunk-astronomy-demo-${VERSION}"
+          LATEST_DIR="target/splunk-astronomy-shop/splunk-astronomy-demo-latest"
 
-          # Update latest symlinks/copies
-          cp "$MANIFEST" target/splunk-astronomy-shop/splunk-astronomy-shop-latest.yaml
-          cp "$VALUES" target/splunk-astronomy-shop/splunk-astronomy-shop-values-latest.yaml
+          mkdir -p "$PROD_DIR"
 
-          echo "✅ Copied to \`target/splunk-astronomy-shop/\`" >> $GITHUB_STEP_SUMMARY
+          # Copy all files into versioned directory
+          cp "$MANIFEST" "$PROD_DIR/"
+          cp "$VALUES" "$PROD_DIR/"
+          [ -f "$MANIFEST_LAMBDA" ] && cp "$MANIFEST_LAMBDA" "$PROD_DIR/"
+          [ -f "$MANIFEST_DC_SHIM" ] && cp "$MANIFEST_DC_SHIM" "$PROD_DIR/"
+
+          echo "✅ Copied to \`$PROD_DIR/\`" >> $GITHUB_STEP_SUMMARY
+
+          # Replace latest with a copy of the versioned directory
+          rm -rf "$LATEST_DIR"
+          cp -r "$PROD_DIR" "$LATEST_DIR"
+
+          echo "✅ Updated \`splunk-astronomy-demo-latest/\`" >> $GITHUB_STEP_SUMMARY
 
       # -----------------------------
       # DIAB FLOW
@@ -202,23 +228,45 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### DIAB Deployment" >> $GITHUB_STEP_SUMMARY
 
-          # V3 targets
-          # Copy versioned files
-          cp "$MANIFEST_DIAB" target/demo-in-a-box/v3/deployments/
-          cp "$VALUES" target/demo-in-a-box/v3/opentelemetry-collector/
+          # --- V3 targets ---
+          V3_DEPLOY_DIR="target/demo-in-a-box/v3/deployments/splunk-astronomy-demo-${VERSION}"
+          V3_LATEST_DIR="target/demo-in-a-box/v3/deployments/splunk-astronomy-demo-latest"
 
-          # Update latest symlinks/copies
-          cp "$MANIFEST_DIAB" target/demo-in-a-box/v3/deployments/splunk-astronomy-shop-latest-diab.yaml
+          mkdir -p "$V3_DEPLOY_DIR"
+
+          # Values stay in same location
+          cp "$VALUES" target/demo-in-a-box/v3/opentelemetry-collector/
           cp "$VALUES" target/demo-in-a-box/v3/opentelemetry-collector/splunk-astronomy-shop-values-latest.yaml
+
+          # Manifests into versioned directory
+          cp "$MANIFEST_DIAB" "$V3_DEPLOY_DIR/"
+          [ -f "$MANIFEST_LAMBDA" ] && cp "$MANIFEST_LAMBDA" "$V3_DEPLOY_DIR/"
+          [ -f "$MANIFEST_DC_SHIM" ] && cp "$MANIFEST_DC_SHIM" "$V3_DEPLOY_DIR/"
+
+          # Replace latest
+          rm -rf "$V3_LATEST_DIR"
+          cp -r "$V3_DEPLOY_DIR" "$V3_LATEST_DIR"
 
           echo "✅ Copied to \`target/demo-in-a-box/v3/\`" >> $GITHUB_STEP_SUMMARY
 
-          # V4 targets
-          mkdir -p target/demo-in-a-box/v4/demo-manifests/splunk-astronomy-shop-latest-diab
+          # --- V4 targets ---
+          V4_DEPLOY_DIR="target/demo-in-a-box/v4/demo-manifests/splunk-astronomy-demo-${VERSION}"
+          V4_LATEST_DIR="target/demo-in-a-box/v4/demo-manifests/splunk-astronomy-demo-latest"
+
+          mkdir -p "$V4_DEPLOY_DIR"
           mkdir -p target/demo-in-a-box/v4/collector
 
-          cp "$MANIFEST_DIAB" target/demo-in-a-box/v4/demo-manifests/splunk-astronomy-shop-latest-diab/splunk-astronomy-shop-latest-diab.yaml
+          # Values stay in same location
           cp "$VALUES" target/demo-in-a-box/v4/collector/splunk-astronomy-shop-latest-values.yaml
+
+          # Manifests into versioned directory
+          cp "$MANIFEST_DIAB" "$V4_DEPLOY_DIR/"
+          [ -f "$MANIFEST_LAMBDA" ] && cp "$MANIFEST_LAMBDA" "$V4_DEPLOY_DIR/"
+          [ -f "$MANIFEST_DC_SHIM" ] && cp "$MANIFEST_DC_SHIM" "$V4_DEPLOY_DIR/"
+
+          # Replace latest
+          rm -rf "$V4_LATEST_DIR"
+          cp -r "$V4_DEPLOY_DIR" "$V4_LATEST_DIR"
 
           echo "✅ Copied to \`target/demo-in-a-box/v4/\`" >> $GITHUB_STEP_SUMMARY
 
