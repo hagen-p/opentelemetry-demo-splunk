@@ -21,6 +21,9 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: write
+
 jobs:
   promote:
     # Only run in the main splunk/opentelemetry-demo repo, not in forks
