@@ -1,6 +1,6 @@
 # Splunk Astronomy Shop Kubernetes Manifest - lambda
 # Version: 2.0.0-fix
-# Generated on: 2026-04-23T14:53:36Z
+# Generated on: 2026-04-23T15:31:59Z
 #
 # This manifest combines service deployments for the Splunk Astronomy Shop
 # Services are defined in services.yaml
