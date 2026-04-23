@@ -55,8 +55,49 @@ var (
 	reg    metric.Registration
 )
 
+// multiHandler fans out log records to multiple slog handlers,
+// ensuring logs reach both stderr and OTLP.
+type multiHandler struct {
+	handlers []slog.Handler
+}
+
+func (m *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, h := range m.handlers {
+		if h.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *multiHandler) Handle(ctx context.Context, record slog.Record) error {
+	for _, h := range m.handlers {
+		if h.Enabled(ctx, record.Level) {
+			_ = h.Handle(ctx, record.Clone())
+		}
+	}
+	return nil
+}
+
+func (m *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	handlers := make([]slog.Handler, len(m.handlers))
+	for i, h := range m.handlers {
+		handlers[i] = h.WithAttrs(attrs)
+	}
+	return &multiHandler{handlers: handlers}
+}
+
+func (m *multiHandler) WithGroup(name string) slog.Handler {
+	handlers := make([]slog.Handler, len(m.handlers))
+	for i, h := range m.handlers {
+		handlers[i] = h.WithGroup(name)
+	}
+	return &multiHandler{handlers: handlers}
+}
+
 func init() {
-	logger = otelslog.NewLogger("product-catalog")
+	// Start with stdout logger for pre-OTel-init messages
+	logger = slog.New(slog.NewTextHandler(os.Stdout, nil))
 }
 
 func initDatabase() error {
@@ -95,16 +136,18 @@ func initDatabase() error {
 }
 
 func main() {
+	fmt.Fprintln(os.Stdout, "product-catalog: starting up")
 	ctx := context.Background()
 
 	// Initialize OpenTelemetry SDK with otelconf
-	// Note: must use fmt.Fprintf(os.Stderr) here, not logger.Error(), because
-	// the logger depends on the OTel SDK which is what just failed (catch-22).
+	// Note: must use fmt for errors here — logger depends on OTel SDK (catch-22).
+	fmt.Fprintln(os.Stdout, "product-catalog: initializing OpenTelemetry SDK")
 	sdk, err := otelconf.NewSDK(otelconf.WithContext(ctx))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "FATAL: Failed to initialize OpenTelemetry SDK: %v\n", err)
 		os.Exit(1)
 	}
+	fmt.Fprintln(os.Stdout, "product-catalog: OpenTelemetry SDK initialized")
 	defer func() {
 		if err := sdk.Shutdown(ctx); err != nil {
 			logger.Error(fmt.Sprintf("Error shutting down OpenTelemetry SDK: %v", err))
@@ -118,11 +161,21 @@ func main() {
 	global.SetLoggerProvider(sdk.LoggerProvider())
 	otel.SetTextMapPropagator(sdk.Propagator())
 
+	// Upgrade to dual logger: stdout + OTLP
+	logger = slog.New(&multiHandler{
+		handlers: []slog.Handler{
+			slog.NewTextHandler(os.Stdout, nil),
+			otelslog.NewHandler("product-catalog"),
+		},
+	})
+
 	// Initialize database connection
+	fmt.Fprintln(os.Stdout, "product-catalog: connecting to database")
 	if err := initDatabase(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error initializing database: %v\n", err)
+		fmt.Fprintf(os.Stderr, "FATAL: Error initializing database: %v\n", err)
 		os.Exit(1)
 	}
+	fmt.Fprintln(os.Stdout, "product-catalog: database connection established")
 	defer func() {
 		if db != nil {
 			if err := db.Close(); err != nil {
@@ -140,6 +193,7 @@ func main() {
 		}
 	}()
 
+	fmt.Fprintln(os.Stdout, "product-catalog: initializing feature flags (flagd)")
 	openfeature.AddHooks(otelhooks.NewTracesHook())
 	provider, err := flagd.NewProvider()
 	if err != nil {
@@ -159,12 +213,12 @@ func main() {
 	var port string
 	mustMapEnv(&port, "PRODUCT_CATALOG_PORT")
 
-	logger.Info(fmt.Sprintf("Product Catalog gRPC server started on port: %s", port))
-
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
 	if err != nil {
 		logger.Error(fmt.Sprintf("TCP Listen: %v", err))
+		os.Exit(1)
 	}
+	fmt.Fprintf(os.Stdout, "product-catalog: gRPC server listening on port %s\n", port)
 
 	srv := grpc.NewServer(
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
@@ -329,6 +383,7 @@ func mustMapEnv(target *string, key string) {
 	value, present := os.LookupEnv(key)
 	if !present {
 		logger.Error(fmt.Sprintf("Environment Variable Not Set: %q", key))
+		os.Exit(1)
 	}
 	*target = value
 }
