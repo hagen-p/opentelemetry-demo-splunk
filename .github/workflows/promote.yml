@@ -51,43 +51,6 @@ jobs:
           token: ${{ secrets.GHCR_TOKEN }}
           path: target
 
-      - name: List available versions
-        id: available
-        run: |
-          echo "### Available Versions in kubernetes/" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          # Extract unique versions from filenames
-          VERSIONS=$(ls kubernetes/splunk-astronomy-shop-*-values.yaml 2>/dev/null | \
-            sed 's/.*splunk-astronomy-shop-\(.*\)-values\.yaml/\1/' | \
-            sort -V | \
-            uniq)
-
-          if [ -z "$VERSIONS" ]; then
-            echo "⚠️ No versions found with values.yaml files" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Files in kubernetes/:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            ls -la kubernetes/ 2>/dev/null || echo "Directory not found"
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| Version | Values | Manifest | DIAB |" >> $GITHUB_STEP_SUMMARY
-            echo "|---------|--------|----------|------|" >> $GITHUB_STEP_SUMMARY
-
-            for V in $VERSIONS; do
-              VALUES_OK="❌"
-              MANIFEST_OK="❌"
-              DIAB_OK="❌"
-
-              [ -f "kubernetes/splunk-astronomy-shop-${V}-values.yaml" ] && VALUES_OK="✅"
-              [ -f "kubernetes/splunk-astronomy-shop-${V}.yaml" ] && MANIFEST_OK="✅"
-              [ -f "kubernetes/splunk-astronomy-shop-${V}-diab.yaml" ] && DIAB_OK="✅"
-
-              echo "| \`${V}\` | ${VALUES_OK} | ${MANIFEST_OK} | ${DIAB_OK} |" >> $GITHUB_STEP_SUMMARY
-            done
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-
       - name: Set variables
         id: vars
         run: |
@@ -97,18 +60,18 @@ jobs:
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           echo "SCOPE=${SCOPE}" >> $GITHUB_ENV
 
-          # Source files (from kubernetes/)
-          MANIFEST="kubernetes/splunk-astronomy-shop-${VERSION}.yaml"
-          MANIFEST_DIAB="kubernetes/splunk-astronomy-shop-${VERSION}-diab.yaml"
-          MANIFEST_LAMBDA="kubernetes/splunk-astronomy-shop-${VERSION}-lambda.yaml"
-          MANIFEST_DC_SHIM="kubernetes/splunk-astronomy-shop-${VERSION}-dc-shim.yaml"
+          # Values file lives in the repo
           VALUES="kubernetes/splunk-astronomy-shop-${VERSION}-values.yaml"
-
-          echo "MANIFEST=${MANIFEST}" >> $GITHUB_ENV
-          echo "MANIFEST_DIAB=${MANIFEST_DIAB}" >> $GITHUB_ENV
-          echo "MANIFEST_LAMBDA=${MANIFEST_LAMBDA}" >> $GITHUB_ENV
-          echo "MANIFEST_DC_SHIM=${MANIFEST_DC_SHIM}" >> $GITHUB_ENV
           echo "VALUES=${VALUES}" >> $GITHUB_ENV
+
+          # Manifest filenames (downloaded from release assets)
+          DOWNLOAD_DIR="release-assets"
+          echo "DOWNLOAD_DIR=${DOWNLOAD_DIR}" >> $GITHUB_ENV
+
+          echo "MANIFEST=${DOWNLOAD_DIR}/splunk-astronomy-shop-${VERSION}.yaml" >> $GITHUB_ENV
+          echo "MANIFEST_DIAB=${DOWNLOAD_DIR}/splunk-astronomy-shop-${VERSION}-diab.yaml" >> $GITHUB_ENV
+          echo "MANIFEST_LAMBDA=${DOWNLOAD_DIR}/splunk-astronomy-shop-${VERSION}-lambda.yaml" >> $GITHUB_ENV
+          echo "MANIFEST_DC_SHIM=${DOWNLOAD_DIR}/splunk-astronomy-shop-${VERSION}-dc-shim.yaml" >> $GITHUB_ENV
 
           echo "### Selected Configuration" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -116,6 +79,53 @@ jobs:
           echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Version | \`${VERSION}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Scope | ${SCOPE} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Release tag | \`v${VERSION}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: Download manifests from GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$DOWNLOAD_DIR"
+
+          echo "### Release Assets Download" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Check release exists
+          if ! gh release view "v${VERSION}" --json tagName -q .tagName > /dev/null 2>&1; then
+            echo "::error::Release v${VERSION} not found"
+            echo "❌ **Release \`v${VERSION}\` not found**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Available releases:" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            gh release list --limit 10 >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          echo "✅ Release \`v${VERSION}\` found" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Download all manifest assets from the release
+          echo "Downloading assets from release v${VERSION}..."
+          gh release download "v${VERSION}" \
+            --pattern "splunk-astronomy-shop-*.yaml" \
+            --dir "$DOWNLOAD_DIR" || true
+
+          echo "| Asset | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+
+          for FILE in \
+            "splunk-astronomy-shop-${VERSION}.yaml" \
+            "splunk-astronomy-shop-${VERSION}-diab.yaml" \
+            "splunk-astronomy-shop-${VERSION}-lambda.yaml" \
+            "splunk-astronomy-shop-${VERSION}-dc-shim.yaml"; do
+            if [ -f "${DOWNLOAD_DIR}/${FILE}" ]; then
+              echo "| \`${FILE}\` | ✅ Downloaded |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| \`${FILE}\` | ℹ️ Not in release |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
           echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: Verify values.yaml exists (required)
@@ -140,54 +150,39 @@ jobs:
             exit 1
           fi
 
-      - name: Verify manifest files exist
+      - name: Verify required manifests downloaded
         run: |
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Manifest Files Check" >> $GITHUB_STEP_SUMMARY
+          echo "### Manifest Verification" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           MISSING=0
 
           if [[ "$SCOPE" == "all" || "$SCOPE" == "prod" ]]; then
             if [ -f "$MANIFEST" ]; then
-              echo "✅ PROD manifest: \`$MANIFEST\`" >> $GITHUB_STEP_SUMMARY
+              echo "✅ PROD manifest downloaded" >> $GITHUB_STEP_SUMMARY
             else
-              echo "❌ PROD manifest missing: \`$MANIFEST\`" >> $GITHUB_STEP_SUMMARY
+              echo "❌ PROD manifest missing from release: \`splunk-astronomy-shop-${VERSION}.yaml\`" >> $GITHUB_STEP_SUMMARY
               MISSING=1
             fi
           fi
 
           if [[ "$SCOPE" == "all" || "$SCOPE" == "diab" ]]; then
             if [ -f "$MANIFEST_DIAB" ]; then
-              echo "✅ DIAB manifest: \`$MANIFEST_DIAB\`" >> $GITHUB_STEP_SUMMARY
+              echo "✅ DIAB manifest downloaded" >> $GITHUB_STEP_SUMMARY
             else
-              echo "❌ DIAB manifest missing: \`$MANIFEST_DIAB\`" >> $GITHUB_STEP_SUMMARY
+              echo "❌ DIAB manifest missing from release: \`splunk-astronomy-shop-${VERSION}-diab.yaml\`" >> $GITHUB_STEP_SUMMARY
               MISSING=1
             fi
           fi
 
           # Lambda and dc-shim are optional
-          if [ -f "$MANIFEST_LAMBDA" ]; then
-            echo "✅ Lambda manifest: \`$MANIFEST_LAMBDA\`" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "ℹ️ Lambda manifest not found (optional): \`$MANIFEST_LAMBDA\`" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          if [ -f "$MANIFEST_DC_SHIM" ]; then
-            echo "✅ DC-Shim manifest: \`$MANIFEST_DC_SHIM\`" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "ℹ️ DC-Shim manifest not found (optional): \`$MANIFEST_DC_SHIM\`" >> $GITHUB_STEP_SUMMARY
-          fi
+          [ -f "$MANIFEST_LAMBDA" ] && echo "✅ Lambda manifest downloaded" >> $GITHUB_STEP_SUMMARY || echo "ℹ️ Lambda manifest not in release (optional)" >> $GITHUB_STEP_SUMMARY
+          [ -f "$MANIFEST_DC_SHIM" ] && echo "✅ DC-Shim manifest downloaded" >> $GITHUB_STEP_SUMMARY || echo "ℹ️ DC-Shim manifest not in release (optional)" >> $GITHUB_STEP_SUMMARY
 
           if [ $MISSING -eq 1 ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "::error::Some manifest files are missing. Check kubernetes/ directory."
-            echo "**Error:** Some manifest files are missing." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Available files in kubernetes/:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            ls -la kubernetes/ 2>/dev/null || echo "Directory not found"
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "::error::Required manifest files missing from release v${VERSION}"
             exit 1
           fi
 
