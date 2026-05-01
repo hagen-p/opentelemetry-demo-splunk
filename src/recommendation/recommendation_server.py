@@ -14,7 +14,8 @@ from concurrent import futures
 import grpc
 import psycopg2
 from psycopg2 import pool
-from opentelemetry import trace, metrics
+from opentelemetry import trace, metrics, context
+from opentelemetry.trace import format_trace_id, format_span_id
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
     OTLPLogExporter,
@@ -219,6 +220,18 @@ def check_feature_flag(flag_name: str):
     return client.get_boolean_value(flag_name, False)
 
 
+def get_traceparent_comment():
+    """Build a SQL comment with W3C traceparent for DBMon trace-query correlation."""
+    span = trace.get_current_span()
+    ctx = span.get_span_context()
+    if ctx and ctx.is_valid:
+        trace_id = format_trace_id(ctx.trace_id)
+        span_id = format_span_id(ctx.span_id)
+        flags = '01' if ctx.trace_flags.sampled else '00'
+        return f"/*traceparent='00-{trace_id}-{span_id}-{flags}'*/"
+    return ''
+
+
 def get_pg_pool():
     """Initialize PostgreSQL connection pool for DBMon demo."""
     global pg_pool
@@ -271,7 +284,9 @@ def execute_cartesian_query(use_bad_query: bool):
         try:
             conn = pool.getconn()
             with conn.cursor() as cur:
-                cur.execute(query, (category, tag))
+                traceparent = get_traceparent_comment()
+                commented_query = f"{traceparent}\n{query}" if traceparent else query
+                cur.execute(commented_query, (category, tag))
                 results = cur.fetchall()
                 span.set_attribute('db.rows_returned', len(results))
                 return results
