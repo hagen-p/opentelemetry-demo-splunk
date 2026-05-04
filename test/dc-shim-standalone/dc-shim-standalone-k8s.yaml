@@ -1,0 +1,417 @@
+### DC-Shim Standalone Test Environment
+###
+### Deploys everything needed to test shop-dc-shim without the full Astronomy Shop platform:
+###   - Stub gRPC server (CartService + CheckoutService)
+###   - SQL Server database
+###   - OTel Collector (receive-and-drop sink)
+###   - shop-dc-shim application
+###   - shop-dc-loadgenerator
+###
+### Prerequisites:
+###   1. Stub image built by "Build Test Images" GitHub Action, or manually:
+###      docker build -t ghcr.io/hagen-p/opentelemetry-demo-splunk/dc-shim-standalone:latest \
+###        -f test/dc-shim-standalone/Dockerfile test/dc-shim-standalone/
+###      docker push ghcr.io/hagen-p/opentelemetry-demo-splunk/dc-shim-standalone:latest
+###   2. Create namespace and deploy:
+###      kubectl create namespace dc-shim-test
+###      kubectl -n dc-shim-test apply -f test/dc-shim-standalone/dc-shim-standalone-k8s.yaml
+###
+### To tear down:
+###   kubectl delete namespace dc-shim-test
+###
+---
+# ServiceAccount (referenced by shop-dc-shim and loadgen)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: opentelemetry-demo
+
+###############################################################################
+# 1. STUB gRPC SERVER — replaces cart + checkout from full platform
+###############################################################################
+---
+# checkout Service — routes to stub pod
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout
+  labels:
+    app.kubernetes.io/component: dc-shim-stub
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      name: grpc
+      targetPort: 8080
+  selector:
+    app: dc-shim-stub
+---
+# cart Service — routes to same stub pod
+apiVersion: v1
+kind: Service
+metadata:
+  name: cart
+  labels:
+    app.kubernetes.io/component: dc-shim-stub
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      name: grpc
+      targetPort: 8080
+  selector:
+    app: dc-shim-stub
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dc-shim-stub
+  labels:
+    app: dc-shim-stub
+    app.kubernetes.io/component: dc-shim-stub
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dc-shim-stub
+  template:
+    metadata:
+      labels:
+        app: dc-shim-stub
+    spec:
+      containers:
+        - name: stub
+          image: ghcr.io/hagen-p/opentelemetry-demo-splunk/dc-shim-standalone:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: grpc
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+
+###############################################################################
+# 2. SQL SERVER — shop-dc-shim-db (same as production)
+###############################################################################
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-dc-shim-db
+  labels:
+    app.kubernetes.io/component: shop-dc-shim-db
+spec:
+  type: ClusterIP
+  ports:
+    - port: 1433
+      name: sqlserver
+      targetPort: 1433
+  selector:
+    app: shop-dc-shim-db
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-dc-shim-db
+  labels:
+    app: shop-dc-shim-db
+    app.kubernetes.io/component: shop-dc-shim-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shop-dc-shim-db
+  template:
+    metadata:
+      labels:
+        app: shop-dc-shim-db
+    spec:
+      containers:
+        - name: sqlserver
+          image: mcr.microsoft.com/mssql/server:2022-latest
+          ports:
+            - containerPort: 1433
+          env:
+            - name: ACCEPT_EULA
+              value: "Y"
+            - name: MSSQL_SA_PASSWORD
+              value: "ShopPass123!"
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1"
+            limits:
+              memory: "3Gi"
+              cpu: "2"
+          volumeMounts:
+            - name: sqlserver-storage
+              mountPath: /var/opt/mssql/data
+      volumes:
+        - name: sqlserver-storage
+          emptyDir: {}
+
+###############################################################################
+# 3. OTEL COLLECTOR — receive-and-drop telemetry sink
+###############################################################################
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dc-shim-otel-config
+data:
+  otel-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+          grpc:
+            endpoint: 0.0.0.0:4317
+    exporters:
+      debug:
+        verbosity: basic
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [debug]
+        metrics:
+          receivers: [otlp]
+          exporters: [debug]
+        logs:
+          receivers: [otlp]
+          exporters: [debug]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  labels:
+    app.kubernetes.io/component: otel-collector
+spec:
+  type: ClusterIP
+  ports:
+    - port: 4317
+      name: otlp-grpc
+      targetPort: 4317
+    - port: 4318
+      name: otlp-http
+      targetPort: 4318
+  selector:
+    app: otel-collector
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  labels:
+    app: otel-collector
+    app.kubernetes.io/component: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector:0.114.0
+          args: ["--config=/etc/otel/otel-config.yaml"]
+          ports:
+            - containerPort: 4317
+              name: otlp-grpc
+            - containerPort: 4318
+              name: otlp-http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+      volumes:
+        - name: config
+          configMap:
+            name: dc-shim-otel-config
+
+###############################################################################
+# 4. SHOP-DC-SHIM — the service under test
+###############################################################################
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-dc-shim
+  labels:
+    app.kubernetes.io/component: shop-dc-shim
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8070
+      name: http
+      targetPort: 8070
+  selector:
+    app: shop-dc-shim
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-dc-shim
+  labels:
+    app: shop-dc-shim
+    app.kubernetes.io/component: shop-dc-shim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shop-dc-shim
+  template:
+    metadata:
+      labels:
+        app: shop-dc-shim
+    spec:
+      serviceAccountName: opentelemetry-demo
+      containers:
+        - name: shop-dc-shim
+          image: ghcr.io/splunk/opentelemetry-demo/otel-shop-dc-shim:2.0.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8070
+              name: http
+          command: ["/usr/bin/dumb-init"]
+          args:
+            - --
+            - /bin/bash
+            - -c
+            - |
+              export OTEL_RESOURCE_ATTRIBUTES="service.name=shop-dc-shim-service,deployment.environment=standalone-test-datacenter-b01,service.version=2.1.3,service.namespace=shop-dc-shim"
+              # Point OTel exporter at in-cluster collector instead of node agent
+              sed -i "s|http://splunk-otel-collector-agent:4318|http://otel-collector:4318|g" /app/start-app-dual.sh
+              exec /app/start-app-dual.sh
+          env:
+            # Override WORKSHOP_ENV — no secret dependency for standalone
+            - name: WORKSHOP_ENV
+              value: "standalone-test"
+            - name: TPM
+              value: "5"
+            - name: TRANSACTION_RETENTION_MINUTES
+              value: "30"
+            - name: TRANSACTION_CLEANUP_INTERVAL_MS
+              value: "1800000"
+            - name: SHOP_DC_SHIM_PORT
+              value: "8070"
+            - name: DB_CONNECTION_STRING
+              value: "jdbc:sqlserver://shop-dc-shim-db:1433;databaseName=master;encrypt=false;trustServerCertificate=true"
+            - name: DB_USERNAME
+              value: "sa"
+            - name: DB_PASSWORD
+              value: "ShopPass123!"
+            - name: CHECKOUT_SERVICE_ADDR
+              value: "checkout:8080"
+            # Point OTel at in-cluster collector
+            - name: NODE_IP
+              value: "otel-collector"
+            - name: OTEL_COLLECTOR_NAME
+              value: "otel-collector"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4318"
+            - name: OTEL_SERVICE_NAME
+              value: "shop-dc-shim"
+            - name: OTEL_JAVAAGENT_ENABLED
+              value: "true"
+            - name: OTEL_JAVAAGENT_DEBUG
+              value: "false"
+            # Disable AppDynamics for standalone testing
+            - name: APPDYNAMICS_JAVAAGENT_ENABLED
+              value: "false"
+            - name: OTEL_INSTRUMENTATION_SPLUNK_JDBC_ENABLED
+              value: "true"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8070
+            initialDelaySeconds: 240
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8070
+            initialDelaySeconds: 420
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+
+###############################################################################
+# 5. LOAD GENERATOR — drives traffic to shop-dc-shim
+###############################################################################
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-dc-load-generator
+  labels:
+    app: shop-dc-load-generator
+    app.kubernetes.io/component: shop-dc-load-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shop-dc-load-generator
+  template:
+    metadata:
+      labels:
+        app: shop-dc-load-generator
+    spec:
+      serviceAccountName: opentelemetry-demo
+      initContainers:
+        - name: wait-for-shop-dc-shim
+          image: curlimages/curl:8.1.2
+          command: ['sh', '-c']
+          args:
+            - |
+              echo "Waiting for shop-dc-shim to be ready..."
+              until curl -f --connect-timeout 5 --max-time 20 http://shop-dc-shim:8070/actuator/health; do
+                echo "Not ready, waiting 20s..."
+                sleep 20
+              done
+              echo "shop-dc-shim ready, starting load generator..."
+          resources:
+            limits:
+              memory: "64Mi"
+              cpu: "50m"
+      containers:
+        - name: load-generator
+          image: ghcr.io/splunk/opentelemetry-demo/otel-shop-dc-loadgenerator:2.0.0
+          env:
+            - name: TPM
+              value: "5"
+          args: ["--url", "http://shop-dc-shim:8070", "--mode", "continuous", "--duration", "0"]
+          resources:
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
