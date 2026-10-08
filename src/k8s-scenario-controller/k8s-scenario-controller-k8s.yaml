@@ -74,7 +74,7 @@ spec:
       serviceAccountName: k8s-scenario-controller
       containers:
         - name: k8s-scenario-controller
-          image: ghcr.io/splunk/opentelemetry-demo/otel-k8s-scenario-controller:2.0.9-beta.1
+          image: ghcr.io/hagen-p/opentelemetry-demo-splunk/otel-k8s-scenario-controller:2.0.9-beta.1
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
